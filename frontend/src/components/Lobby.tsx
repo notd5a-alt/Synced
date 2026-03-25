@@ -8,6 +8,8 @@ interface LobbyProps {
   hostAddr: string;
   connectionState: string;
   signalingState: SignalingState;
+  signalingUrl: string | null;
+  debugLog: string[];
   timeoutExpired: boolean;
   onRetry: () => void;
   onCancel: () => void;
@@ -18,6 +20,8 @@ export default function Lobby({
   hostAddr,
   connectionState,
   signalingState,
+  signalingUrl,
+  debugLog,
   timeoutExpired,
   onRetry,
   onCancel,
@@ -85,6 +89,32 @@ export default function Lobby({
       ) : (
         <span className="ascii-spinner">{SPINNER_CHARS[spinIdx]}</span>
       )}
+
+      <div style={{
+        marginTop: "2rem",
+        padding: "0.75rem",
+        background: "#111",
+        border: "1px solid #333",
+        borderRadius: "4px",
+        fontSize: "0.7rem",
+        fontFamily: "monospace",
+        textAlign: "left",
+        maxWidth: "500px",
+        width: "100%",
+        color: "#0f0",
+      }}>
+        <div style={{ marginBottom: "0.5rem", color: "#888" }}>
+          // DIAG: role={isHost ? "host" : "join"} sig={signalingState} rtc={connectionState}
+        </div>
+        <div style={{ marginBottom: "0.5rem", color: "#888", wordBreak: "break-all" }}>
+          // URL: {signalingUrl || "none"}
+        </div>
+        <div style={{ maxHeight: "120px", overflowY: "auto" }}>
+          {debugLog.map((line, i) => (
+            <div key={i}>{line}</div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

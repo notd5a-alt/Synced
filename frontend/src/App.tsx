@@ -306,6 +306,8 @@ export default function App() {
         hostAddr={hostAddr}
         connectionState={webrtc.connectionState}
         signalingState={signaling.state}
+        signalingUrl={sigUrl}
+        debugLog={signaling.debugLog}
         timeoutExpired={monitor.timeoutExpired}
         onRetry={handleRetry}
         onCancel={handleDisconnect}

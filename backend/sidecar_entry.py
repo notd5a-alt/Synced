@@ -15,11 +15,12 @@ def main():
 
     backend_main.server_port = args.port
 
+    # Use "info" to see signaling room events in Tauri console
     uvicorn.run(
         "backend.main:app",
         host="0.0.0.0",
         port=args.port,
-        log_level="warning",
+        log_level="info",
     )
 
 

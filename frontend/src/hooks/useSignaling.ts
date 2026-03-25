@@ -13,6 +13,12 @@ export default function useSignaling(url: string | null): SignalingHook {
   const intentionalCloseRef = useRef(false);
   const urlRef = useRef(url);
   const [state, setState] = useState<SignalingState>("closed");
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+
+  const addLog = useCallback((msg: string) => {
+    const ts = new Date().toLocaleTimeString();
+    setDebugLog((prev) => [...prev.slice(-19), `${ts} ${msg}`]);
+  }, []);
 
   urlRef.current = url;
 
@@ -25,17 +31,20 @@ export default function useSignaling(url: string | null): SignalingHook {
     if (wsRef.current) return;
     setState(reconnectAttemptRef.current > 0 ? "reconnecting" : "connecting");
 
+    addLog(`WS connecting to ${currentUrl}`);
     const ws = new WebSocket(currentUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log("[signaling] open:", currentUrl);
+      addLog(`WS open`);
       setState("open");
       wasEverOpenRef.current = true;
       reconnectAttemptRef.current = 0;
     };
     ws.onclose = (event: CloseEvent) => {
       console.log("[signaling] closed: code=%d reason=%s", event.code, event.reason);
+      addLog(`WS closed code=${event.code} reason=${event.reason}`);
       wsRef.current = null;
 
       // Don't reconnect if we intentionally closed or were replaced by a new
@@ -64,18 +73,19 @@ export default function useSignaling(url: string | null): SignalingHook {
       }
     };
     ws.onerror = () => {
-      // onclose always fires after onerror
+      addLog(`WS error`);
     };
     ws.onmessage = (e: MessageEvent) => {
       try {
         const msg = JSON.parse(e.data) as SignalingMessage;
+        addLog(`WS recv: ${msg.type}`);
         if (onMessageRef.current) {
           onMessageRef.current(msg);
         } else {
           queueRef.current.push(msg);
         }
       } catch {
-        // invalid JSON
+        addLog(`WS recv: invalid JSON`);
       }
     };
   };
@@ -89,9 +99,12 @@ export default function useSignaling(url: string | null): SignalingHook {
   const send = useCallback((obj: SignalingMessage) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
+      addLog(`WS send: ${obj.type}`);
       ws.send(JSON.stringify(obj));
+    } else {
+      addLog(`WS send FAIL (not open): ${obj.type}`);
     }
-  }, []);
+  }, [addLog]);
 
   const disconnect = useCallback(() => {
     intentionalCloseRef.current = true;
@@ -121,7 +134,7 @@ export default function useSignaling(url: string | null): SignalingHook {
   }, []);
 
   return useMemo(
-    () => ({ connect, send, disconnect, onMessage, state }),
-    [connect, send, disconnect, onMessage, state]
+    () => ({ connect, send, disconnect, onMessage, state, debugLog, addLog }),
+    [connect, send, disconnect, onMessage, state, debugLog, addLog]
   );
 }

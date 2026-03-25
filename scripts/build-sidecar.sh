@@ -24,7 +24,7 @@ pyinstaller \
     --onefile \
     --name ghostchat-server \
     --strip \
-    --add-data "backend/static:backend/static" \
+    --add-data "${PROJECT_ROOT}/backend/static:backend/static" \
     --distpath src-tauri/binaries \
     --workpath build/pyinstaller \
     --specpath build \

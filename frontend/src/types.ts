@@ -16,6 +16,8 @@ export interface SignalingHook {
   disconnect: () => void;
   onMessage: (handler: (msg: SignalingMessage) => void) => void;
   state: SignalingState;
+  debugLog: string[];
+  addLog: (msg: string) => void;
 }
 
 // --- Connection monitoring ---

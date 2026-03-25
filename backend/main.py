@@ -30,6 +30,16 @@ async def info():
     return {"ip": get_local_ip(), "port": server_port}
 
 
+@app.get("/api/debug")
+async def debug():
+    """Debug endpoint — shows signaling room state."""
+    return {
+        "peers": list(room._peers.keys()),
+        "is_full": room.is_full,
+        "peer_count": len(room._peers),
+    }
+
+
 @app.get("/api/ice-config")
 async def ice_config():
     servers = [

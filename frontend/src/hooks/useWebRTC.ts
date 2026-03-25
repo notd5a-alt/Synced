@@ -121,6 +121,17 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
 
     const host = isHostRef.current;
     const sig = signalingRef.current;
+    const log = (msg: string) => signalingRef.current.addLog(msg);
+
+    if (typeof RTCPeerConnection === "undefined") {
+      log("ERROR: RTCPeerConnection not available in this webview");
+      setCallError(
+        "WebRTC is not supported in this webview. On Linux, install gstreamer WebRTC plugins: sudo apt install gstreamer1.0-nice gstreamer1.0-plugins-bad libgstwebrtc-full-1.0-0"
+      );
+      return;
+    }
+
+    log(`RTC init host=${host} iceServers=${(iceConfig || DEFAULT_ICE_CONFIG).iceServers?.length ?? 0}`);
     const pc = new RTCPeerConnection(iceConfig || DEFAULT_ICE_CONFIG);
     pcRef.current = pc;
 
@@ -134,6 +145,7 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     };
 
     pc.onconnectionstatechange = () => {
+      log(`RTC connectionState: ${pc.connectionState}`);
       setConnectionState(pc.connectionState);
       if (pc.connectionState === "connected" && pc.localDescription && pc.remoteDescription) {
         deriveHmacKey(pc.localDescription.sdp, pc.remoteDescription.sdp)
@@ -190,22 +202,23 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
       negotiationQueueRef.current = negotiationQueueRef.current.then(async () => {
         const pc = pcRef.current;
         if (!pc || pc.signalingState !== "stable" || makingOfferRef.current) {
-          console.log("[webrtc] negotiation skipped: pc=%s, state=%s, makingOffer=%s",
-            !!pc, pc?.signalingState, makingOfferRef.current);
+          log(`RTC negotiate SKIP pc=${!!pc} state=${pc?.signalingState} making=${makingOfferRef.current}`);
           return;
         }
         try {
           makingOfferRef.current = true;
+          log("RTC creating offer...");
           const offer = await pc.createOffer();
-          if (pc.signalingState !== "stable") return;
-          // Optimize Opus params before setting local description
+          if (pc.signalingState !== "stable") { log("RTC offer aborted (not stable)"); return; }
           if (offer.sdp) offer.sdp = optimizeOpusInSDP(offer.sdp);
           await pc.setLocalDescription(offer);
+          log("RTC offer created, sending");
           signalingRef.current.send({
             type: "offer",
             sdp: pc.localDescription!.sdp,
           });
         } catch (err) {
+          log(`RTC negotiate ERROR: ${err}`);
           console.error("negotiation error:", err);
         } finally {
           makingOfferRef.current = false;
@@ -221,13 +234,11 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
 
     sig.onMessage(async (msg: SignalingMessage) => {
       const pc = pcRef.current;
-      if (!pc) return;
+      if (!pc) { log(`RTC msg ${msg.type} ignored (no pc)`); return; }
       const host = isHostRef.current;
 
       try {
-        if (msg.type === "offer" || msg.type === "answer") {
-          console.log("[webrtc] received %s, pcState=%s", msg.type, pc.signalingState);
-        }
+        log(`RTC handle ${msg.type} pcState=${pc.signalingState}`);
         if (msg.type === "offer") {
           const collision =
             makingOfferRef.current || pc.signalingState !== "stable";
@@ -241,9 +252,9 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
             await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp });
           }
           const answer = await pc.createAnswer();
-          // Optimize Opus params before setting local description
           if (answer.sdp) answer.sdp = optimizeOpusInSDP(answer.sdp);
           await pc.setLocalDescription(answer);
+          log("RTC answer created, sending");
           signalingRef.current.send({
             type: "answer",
             sdp: pc.localDescription!.sdp,
@@ -257,17 +268,17 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
             await pc.addIceCandidate(msg.candidate);
           } catch { /* ICE candidate error */ }
         } else if (msg.type === "peer-joined") {
-          console.log("[webrtc] peer-joined, host=%s, pcState=%s", host, pc.signalingState);
+          log(`RTC peer-joined host=${host} pcState=${pc.signalingState}`);
           peerPresent = true;
           if (host) {
-            // If a previous offer was sent but the answer never arrived
-            // (e.g., signaling dropped), the PC is stuck in have-local-offer.
-            // Roll back so enqueueNegotiation can create a fresh offer.
             if (pc.signalingState === "have-local-offer") {
-              console.log("[webrtc] rolling back stuck have-local-offer");
+              log("RTC rolling back stuck have-local-offer");
               await pc.setLocalDescription({ type: "rollback" });
             }
+            log("RTC calling enqueueNegotiation");
             enqueueNegotiation();
+          } else {
+            log("RTC joiner waiting for offer");
           }
         } else if (msg.type === "peer-disconnected") {
           peerPresent = false;
