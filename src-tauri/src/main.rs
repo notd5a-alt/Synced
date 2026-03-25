@@ -16,54 +16,116 @@ const DEFAULT_PORT: u16 = 9876;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Kill any stale process listening on the target port before spawning the sidecar.
-/// This handles the scenario where a previous install's sidecar is still running.
-fn kill_stale_process_on_port(port: u16) {
+/// Known sidecar executable names (current and legacy) that are safe to kill.
+const KNOWN_SIDECAR_NAMES: &[&str] = &[
+    "synced-server",
+    "ghostchat-server",
+];
+
+/// Kill any stale **sidecar** process listening on the target port.
+/// Only kills processes whose name matches a known sidecar binary — never
+/// arbitrary processes that happen to share the port.
+fn kill_stale_sidecar_on_port(port: u16) {
     #[cfg(windows)]
     {
-        // Use netstat to find PID, then taskkill
+        // Step 1: find PIDs listening on the exact port via netstat
         let output = std::process::Command::new("cmd")
-            .args(["/C", &format!("netstat -ano | findstr \"LISTENING\" | findstr \":{port}\"")])
+            .args(["/C", "netstat -ano"])
             .output();
+        let mut pids: Vec<u32> = Vec::new();
         if let Ok(output) = output {
+            let needle = format!(":{port} ");          // trailing space avoids matching :98760
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
-                // Netstat lines end with the PID
+                if !line.contains("LISTENING") || !line.contains(&needle) {
+                    continue;
+                }
                 if let Some(pid_str) = line.split_whitespace().last() {
                     if let Ok(pid) = pid_str.parse::<u32>() {
-                        if pid != std::process::id() {
-                            eprintln!("[tauri] killing stale process {} on port {}", pid, port);
-                            let _ = std::process::Command::new("taskkill")
-                                .args(["/F", "/PID", &pid.to_string()])
-                                .output();
+                        if pid != 0 && pid != std::process::id() && !pids.contains(&pid) {
+                            pids.push(pid);
                         }
                     }
+                }
+            }
+        }
+
+        // Step 2: for each PID, check the process image name before killing
+        for pid in pids {
+            let query = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+                .output();
+            if let Ok(query) = query {
+                let info = String::from_utf8_lossy(&query.stdout).to_lowercase();
+                let is_sidecar = KNOWN_SIDECAR_NAMES
+                    .iter()
+                    .any(|name| info.contains(name));
+                if is_sidecar {
+                    eprintln!("[tauri] killing stale sidecar (pid {}) on port {}", pid, port);
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string()])
+                        .output();
+                } else {
+                    eprintln!("[tauri] port {} held by non-sidecar process (pid {}), skipping", port, pid);
                 }
             }
         }
     }
     #[cfg(unix)]
     {
-        // Use lsof to find PID, then kill
+        // Step 1: find PIDs on the exact port
         let output = std::process::Command::new("lsof")
-            .args(["-ti", &format!("tcp:{port}")])
+            .args(["-ti", &format!("tcp:{port}"), "-sTCP:LISTEN"])
             .output();
+        let mut pids: Vec<u32> = Vec::new();
         if let Ok(output) = output {
             let text = String::from_utf8_lossy(&output.stdout);
             for pid_str in text.split_whitespace() {
                 if let Ok(pid) = pid_str.parse::<u32>() {
-                    if pid != std::process::id() {
-                        eprintln!("[tauri] killing stale process {} on port {}", pid, port);
-                        let _ = std::process::Command::new("kill")
-                            .args(["-9", &pid.to_string()])
-                            .output();
+                    if pid != std::process::id() && !pids.contains(&pid) {
+                        pids.push(pid);
                     }
                 }
             }
         }
+
+        // Step 2: check process name via /proc (Linux) or ps (macOS) before killing
+        for pid in pids {
+            let name = get_process_name_unix(pid);
+            let is_sidecar = KNOWN_SIDECAR_NAMES
+                .iter()
+                .any(|n| name.contains(n));
+            if is_sidecar {
+                eprintln!("[tauri] killing stale sidecar (pid {}) on port {}", pid, port);
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .output();
+            } else {
+                eprintln!("[tauri] port {} held by non-sidecar process '{}' (pid {}), skipping", port, name, pid);
+            }
+        }
     }
+
     // Small delay to let the OS reclaim the port
     std::thread::sleep(Duration::from_millis(500));
+}
+
+/// Read the process name for a given PID on Unix platforms.
+#[cfg(unix)]
+fn get_process_name_unix(pid: u32) -> String {
+    // Try /proc first (Linux)
+    if let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
+        let cmd = cmdline.replace('\0', " ");
+        return cmd.to_lowercase();
+    }
+    // Fallback: ps (macOS / BSDs)
+    if let Ok(output) = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+    {
+        return String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+    }
+    String::new()
 }
 
 /// In dev mode (no custom-protocol feature), the user runs the Python backend
@@ -182,7 +244,7 @@ fn main() {
             let app_handle = app.handle().clone();
             if is_production() {
                 // Kill any stale sidecar from a previous install still holding the port
-                kill_stale_process_on_port(port);
+                kill_stale_sidecar_on_port(port);
 
                 // Production: spawn the Python sidecar (FastAPI backend)
                 let sidecar_cmd = app
