@@ -64,21 +64,31 @@ export type DataChannelMessage =
 
 // --- File transfer ---
 
+export type FileTransferStatus = "compressing" | "sending" | "receiving" | "paused" | "completed" | "failed";
+
 export interface IncomingFile {
   id: string;
   name: string;
   size: number;
+  compressedSize: number;
   progress: number;
   blobUrl: string | null;
+  status: FileTransferStatus;
+  error?: string;
 }
 
 export interface OutgoingFile {
   id: string;
   name: string;
   size: number;
+  compressedSize: number;
   bytesSent: number;
+  status: FileTransferStatus;
 }
 
 export type FileControlMessage =
-  | { type: "file-meta"; id: string; name: string; size: number; mimeType: string }
-  | { type: "file-end"; id: string };
+  | { type: "file-meta"; id: string; name: string; size: number; mimeType: string; compressedSize: number; checksum: string }
+  | { type: "file-end"; id: string }
+  | { type: "file-resume-req"; id: string; receivedBytes: number; chunkIndex: number }
+  | { type: "file-resume-ack"; id: string; resumeFromByte: number; resumeFromChunk: number }
+  | { type: "file-cancel"; id: string };

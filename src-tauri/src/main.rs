@@ -43,6 +43,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
+            let app_handle = app.handle().clone();
             if is_production() {
                 // Production: spawn the Python sidecar (FastAPI backend)
                 let sidecar_cmd = app
@@ -86,32 +87,33 @@ fn main() {
                 app.manage(SidecarState(Mutex::new(None)));
             }
 
-            // Poll until the backend is ready
-            let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-            let deadline = Instant::now() + SIDECAR_TIMEOUT;
-            let mut ready = false;
+            // Poll until the backend is ready in a background task to avoid blocking the main thread
+            tauri::async_runtime::spawn(async move {
+                let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+                let deadline = Instant::now() + SIDECAR_TIMEOUT;
+                let mut ready = false;
 
-            while Instant::now() < deadline {
-                if TcpStream::connect_timeout(&addr, POLL_INTERVAL).is_ok() {
-                    ready = true;
-                    break;
+                while Instant::now() < deadline {
+                    if TcpStream::connect_timeout(&addr, POLL_INTERVAL).is_ok() {
+                        ready = true;
+                        break;
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
                 }
-                std::thread::sleep(POLL_INTERVAL);
-            }
 
-            if !ready {
-                eprintln!("ERROR: backend not reachable on port {} within {:?}", port, SIDECAR_TIMEOUT);
-                return Err("Backend timeout".into());
-            }
+                if !ready {
+                    eprintln!("ERROR: backend not reachable on port {} within {:?}", port, SIDECAR_TIMEOUT);
+                    return;
+                }
 
-            // In production, navigate to the backend (devUrl handles this in dev mode)
-            if is_production() {
-                let window = app.get_webview_window("main").expect("no main window");
-                let url: tauri::Url = format!("http://localhost:{}", port).parse().unwrap();
-                window
-                    .navigate(url)
-                    .expect("failed to navigate window to backend");
-            }
+                // In production, navigate to the backend (devUrl handles this in dev mode)
+                if is_production() {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let url: tauri::Url = format!("http://localhost:{}", port).parse().unwrap();
+                        let _ = window.navigate(url);
+                    }
+                }
+            });
 
             Ok(())
         })
@@ -129,5 +131,5 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("error running GhostChat");
+        .expect("error while running tauri application");
 }

@@ -1,11 +1,14 @@
 import { useState, type FormEvent } from "react";
+import ThemeSelector from "./ThemeSelector";
 
 interface HomeProps {
   onHost: () => void;
   onJoin: (addr: string) => void;
+  themeId: string;
+  onThemeChange: (id: string) => void;
 }
 
-export default function Home({ onHost, onJoin }: HomeProps) {
+export default function Home({ onHost, onJoin, themeId, onThemeChange }: HomeProps) {
   const [joinAddr, setJoinAddr] = useState("");
 
   return (
@@ -39,6 +42,8 @@ export default function Home({ onHost, onJoin }: HomeProps) {
           </button>
         </form>
       </div>
+
+      <ThemeSelector currentTheme={themeId} onSelect={onThemeChange} />
     </div>
   );
 }

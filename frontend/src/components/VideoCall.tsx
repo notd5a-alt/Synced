@@ -221,72 +221,78 @@ export default function VideoCall({
       {callError && <p className="call-error">{callError}</p>}
       <div className="call-controls">
         {!inCall ? (
-          <button
-            className="btn primary"
-            onClick={() => onStartCall(false)}
-          >
-            {hasRemoteTracks ? "Join Call" : "[ CALL ]"}
-          </button>
+          <div className="controls-center">
+            <button
+              className="btn primary"
+              onClick={() => onStartCall(false)}
+            >
+              {hasRemoteTracks ? "[ JOIN CALL ]" : "[ CALL ]"}
+            </button>
+          </div>
         ) : (
           <>
-            <button
-              className={`btn ${audioEnabled ? "" : "muted"}`}
-              onClick={onToggleAudio}
-            >
-              {audioEnabled ? "[ MUTE ]" : "[ UNMUTE ]"}
-            </button>
-            <button
-              className={`btn ${deafened ? "muted" : ""}`}
-              onClick={() => setDeafened((d) => !d)}
-            >
-              {deafened ? "[ UNDEAFEN ]" : "[ DEAFEN ]"}
-            </button>
-            <button
-              className={`btn ${audioProcessing?.noiseSuppression ? "" : "muted"}`}
-              onClick={() => onToggleAudioProcessing("noiseSuppression")}
-              title="Noise Suppression"
-            >
-              {audioProcessing?.noiseSuppression ? "[ NS ON ]" : "[ NS OFF ]"}
-            </button>
-            <button
-              className={`btn ${audioProcessing?.echoCancellation ? "" : "muted"}`}
-              onClick={() => onToggleAudioProcessing("echoCancellation")}
-              title="Echo Cancellation"
-            >
-              {audioProcessing?.echoCancellation ? "[ EC ON ]" : "[ EC OFF ]"}
-            </button>
-            <button
-              className={`btn ${hasVideo ? "" : "muted"}`}
-              onClick={onToggleVideo}
-            >
-              {hasVideo ? "[ CAM OFF ]" : "[ CAM ON ]"}
-            </button>
-            {!isSharing ? (
-              <button className="btn" onClick={onShareScreen}>
-                [ SHARE SCREEN ]
+            <div className="controls-left">
+              <button
+                className={`btn ${audioEnabled ? "" : "muted"}`}
+                onClick={onToggleAudio}
+              >
+                {audioEnabled ? "[ MUTE ]" : "[ UNMUTE ]"}
               </button>
-            ) : (
-              <button className="btn muted" onClick={onStopScreenShare}>
-                [ STOP SHARING ]
+              <button
+                className={`btn ${deafened ? "muted" : ""}`}
+                onClick={() => setDeafened((d) => !d)}
+              >
+                {deafened ? "[ UNDEAFEN ]" : "[ DEAFEN ]"}
               </button>
-            )}
-            {pipSupported && hasRemoteVideo && (
-              <button className="btn" onClick={togglePip}>
-                {isPip ? "[ EXIT PIP ]" : "[ PIP ]"}
+              <button
+                className={`btn ${audioProcessing?.noiseSuppression ? "" : "muted"}`}
+                onClick={() => onToggleAudioProcessing("noiseSuppression")}
+              >
+                {audioProcessing?.noiseSuppression ? "[ NS ON ]" : "[ NS OFF ]"}
               </button>
-            )}
-            <button className="btn" onClick={toggleFullscreen}>
-              {isFullscreen ? "[ EXIT FS ]" : "[ FULLSCREEN ]"}
-            </button>
-            <button
-              className={`btn ${showDiag ? "active" : ""}`}
-              onClick={() => setShowDiag((d) => !d)}
-            >
-              [ DIAG ]
-            </button>
-            <button className="btn danger" onClick={onEndCall}>
-              [ END CALL ]
-            </button>
+              <button
+                className={`btn ${audioProcessing?.echoCancellation ? "" : "muted"}`}
+                onClick={() => onToggleAudioProcessing("echoCancellation")}
+              >
+                {audioProcessing?.echoCancellation ? "[ EC ON ]" : "[ EC OFF ]"}
+              </button>
+            </div>
+            <div className="controls-center">
+              <button
+                className={`btn ${hasVideo ? "" : "muted"}`}
+                onClick={onToggleVideo}
+              >
+                {hasVideo ? "[ CAM OFF ]" : "[ CAM ON ]"}
+              </button>
+              {!isSharing ? (
+                <button className="btn" onClick={onShareScreen}>
+                  [ SHARE ]
+                </button>
+              ) : (
+                <button className="btn muted" onClick={onStopScreenShare}>
+                  [ STOP SHARE ]
+                </button>
+              )}
+              {pipSupported && hasRemoteVideo && (
+                <button className="btn" onClick={togglePip}>
+                  {isPip ? "[ EXIT PIP ]" : "[ PIP ]"}
+                </button>
+              )}
+              <button className="btn" onClick={toggleFullscreen}>
+                {isFullscreen ? "[ EXIT FS ]" : "[ FULLSCREEN ]"}
+              </button>
+            </div>
+            <div className="controls-right">
+              <button
+                className={`btn ${showDiag ? "active" : ""}`}
+                onClick={() => setShowDiag((d) => !d)}
+              >
+                [ DIAG ]
+              </button>
+              <button className="btn danger" onClick={onEndCall}>
+                [ END CALL ]
+              </button>
+            </div>
           </>
         )}
       </div>

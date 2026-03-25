@@ -20,6 +20,8 @@
   --text-dim: rgba(255, 255, 255, 0.5);
   --error: #ffb4ab;
   --ghost-border: rgba(71, 71, 71, 0.2);
+  --accent: #3b82f6;
+  --success: #4ade80;
   --font-mono: "JetBrains Mono", "Space Grotesk", "Courier New", monospace;
 }
 
@@ -49,6 +51,10 @@ body::after {
   );
   pointer-events: none;
   z-index: 9999;
+  transition: opacity 200ms;
+}
+body.no-scanlines::after {
+  opacity: 0;
 }
 
 /* ============================================================
@@ -309,7 +315,7 @@ input[type="text"]:focus:placeholder-shown {
   padding: 8px 16px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-left: 3px solid #4ade80;
+  border-left: 3px solid var(--success);
   margin: 8px 12px 0;
   animation: pill-fade-in 300ms ease;
 }
@@ -317,24 +323,25 @@ input[type="text"]:focus:placeholder-shown {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success);
   animation: pulse-glow 1.5s ease-in-out infinite;
 }
 .incoming-call-pill .pill-text {
   font-family: var(--font);
   font-size: 0.85rem;
-  color: #4ade80;
+  color: var(--success);
   letter-spacing: 0.05em;
   flex: 1;
 }
 .incoming-call-pill .btn {
-  background: #4ade80;
+  background: var(--success);
   color: var(--bg);
-  border-color: #4ade80;
+  border-color: var(--success);
 }
 .incoming-call-pill .btn:hover {
-  background: #22c55e;
-  border-color: #22c55e;
+  background: var(--success);
+  border-color: var(--success);
+  opacity: 0.85;
 }
 .incoming-call-pill .pill-reject {
   background: var(--danger);
@@ -350,8 +357,8 @@ input[type="text"]:focus:placeholder-shown {
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes pulse-glow {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.4); }
-  50% { opacity: 0.6; box-shadow: 0 0 8px 4px rgba(74, 222, 128, 0.2); }
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 40%, transparent); }
+  50% { opacity: 0.6; box-shadow: 0 0 8px 4px color-mix(in srgb, var(--success) 20%, transparent); }
 }
 
 /* Message notification pill */
@@ -557,7 +564,7 @@ input[type="text"]:focus:placeholder-shown {
   overflow: hidden;
 }
 .remote-video { max-width: 100%; max-height: 100%; object-fit: contain; transition: box-shadow 200ms; }
-.remote-video.speaking { box-shadow: 0 0 0 3px #4ade80, 0 0 16px rgba(74, 222, 128, 0.3); }
+.remote-video.speaking { box-shadow: 0 0 0 3px var(--success), 0 0 16px color-mix(in srgb, var(--success) 30%, transparent); }
 .local-video {
   position: absolute;
   bottom: 16px;
@@ -567,7 +574,7 @@ input[type="text"]:focus:placeholder-shown {
   transform: scaleX(-1);
   transition: box-shadow 200ms;
 }
-.local-video.speaking { box-shadow: 0 0 0 2px #4ade80; }
+.local-video.speaking { box-shadow: 0 0 0 2px var(--success); }
 .screen-preview {
   position: absolute;
   bottom: 16px;
@@ -633,8 +640,8 @@ input[type="text"]:focus:placeholder-shown {
   transition: box-shadow 200ms, border-color 200ms;
 }
 .call-status-badge.speaking {
-  box-shadow: 2px 2px 0 0 #4ade80, 0 0 12px rgba(74, 222, 128, 0.3);
-  border-left: 3px solid #4ade80;
+  box-shadow: 2px 2px 0 0 var(--success), 0 0 12px color-mix(in srgb, var(--success) 30%, transparent);
+  border-left: 3px solid var(--success);
 }
 .video-placeholder {
   position: absolute;
@@ -726,12 +733,21 @@ input[type="text"]:focus:placeholder-shown {
 }
 .call-controls {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  justify-content: center;
+  align-items: center;
+  padding: 10px 16px;
   background: var(--surface);
+  gap: 6px;
+}
+.controls-left,
+.controls-center,
+.controls-right {
+  display: flex;
+  gap: 6px;
   flex-wrap: wrap;
 }
+.controls-left { flex: 1; justify-content: flex-start; }
+.controls-center { flex: 1; justify-content: center; }
+.controls-right { flex: 1; justify-content: flex-end; }
 
 /* Fullscreen mode */
 .video-call:fullscreen {
@@ -775,11 +791,18 @@ input[type="text"]:focus:placeholder-shown {
 }
 .transfer {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px 12px;
   background: var(--surface-low);
 }
+.transfer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.transfer-name { font-size: 0.8125rem; font-weight: 500; }
 .transfer span { font-size: 0.8125rem; }
 .ascii-progress {
   font-family: var(--font-mono);
@@ -787,8 +810,84 @@ input[type="text"]:focus:placeholder-shown {
   color: var(--text);
   white-space: nowrap;
 }
+.ascii-progress.paused { color: #f0a030; }
 .transfer-info { font-size: 0.75rem; color: var(--text-dim); white-space: nowrap; }
 .transfer a.btn { text-decoration: none; }
+.transfer-failed { border-left: 3px solid #f55; }
+.transfer-error { font-size: 0.75rem; color: #f55; }
+.compression-badge {
+  font-size: 0.7rem;
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+
+/* ============================================================
+   THEME SELECTOR
+   ============================================================ */
+.theme-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+}
+.theme-label {
+  font-size: 0.6875rem;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+.theme-options {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--outline);
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: all 50ms steps(2);
+}
+.theme-swatch:hover {
+  border-color: var(--text);
+}
+.theme-swatch.active {
+  border-color: var(--text);
+  background: var(--surface-low);
+  box-shadow: 2px 2px 0 0 var(--text);
+}
+.swatch-color {
+  width: 20px;
+  height: 20px;
+  border: 1px solid;
+  display: block;
+}
+.swatch-name {
+  font-size: 0.5625rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.theme-swatch.active .swatch-name {
+  color: var(--text);
+}
+.theme-panel {
+  padding: 4px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--outline);
+  animation: pill-fade-in 200ms ease;
+}
+.btn.active {
+  background: var(--surface-highest);
+  border-color: var(--text);
+}
 
 /* ============================================================
    RESPONSIVE — MOBILE (max-width: 768px)
@@ -823,6 +922,7 @@ input[type="text"]:focus:placeholder-shown {
   .diag-panel { display: none; }
   .call-controls { flex-wrap: wrap; }
   .call-controls .btn { padding: 8px 10px; font-size: 0.75rem; }
+  .controls-left, .controls-center, .controls-right { flex: none; }
 
   /* File share */
   .drop-zone { padding: 16px; }

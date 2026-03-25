@@ -2,7 +2,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from backend.main import app
-from backend.signaling import SignalingRoom, room
+from backend.signaling import manager, SignalingRoom
 
 
 @pytest.fixture
@@ -18,13 +18,13 @@ async def client():
 
 
 @pytest.fixture(autouse=True)
-def reset_room():
-    """Reset the global room between tests."""
-    room._peers.clear()
+def reset_manager():
+    """Reset the global manager between tests."""
+    manager._rooms.clear()
     yield
-    room._peers.clear()
+    manager._rooms.clear()
 
 
 @pytest.fixture
 def fresh_room():
-    return SignalingRoom()
+    return SignalingRoom("test")

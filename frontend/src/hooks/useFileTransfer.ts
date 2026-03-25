@@ -5,24 +5,42 @@ import {
   signChunk,
   verifyChunk,
 } from "../utils/channelAuth";
+import { compressFile, decompressBlob } from "../utils/compression";
 import { playFileComplete } from "../utils/sounds";
-import type { IncomingFile, OutgoingFile } from "../types";
+import type { IncomingFile, OutgoingFile, FileTransferStatus } from "../types";
 
 const CHUNK_SIZE = 16384; // 16 KB
 
 interface PendingFile {
   name: string;
   size: number;
+  compressedSize: number;
   mimeType: string;
+  checksum: string;
   chunks: ArrayBuffer[];
-  received: number;
+  receivedBytes: number;
   chunkIndex: number;
+  status: FileTransferStatus;
+}
+
+interface ActiveSend {
+  id: string;
+  name: string;
+  originalSize: number;
+  compressedBlob: Blob;
+  compressedSize: number;
+  checksum: string;
+  mimeType: string;
+  chunkIndex: number;
+  byteOffset: number;
+  completed: boolean;
 }
 
 export interface FileTransferHook {
   incoming: IncomingFile[];
   outgoing: OutgoingFile | null;
   sendFile: (file: File) => Promise<void>;
+  cancelTransfer: (id: string) => void;
 }
 
 export default function useFileTransfer(
@@ -32,26 +50,114 @@ export default function useFileTransfer(
   const [incoming, setIncoming] = useState<IncomingFile[]>([]);
   const [outgoing, setOutgoing] = useState<OutgoingFile | null>(null);
   const pendingRef = useRef<Record<string, PendingFile>>({});
+  const sendLockRef = useRef(false);
   const channelRef = useRef(channel);
   const hmacKeyRef = useRef(hmacKey);
   const blobUrlsRef = useRef<string[]>([]);
+  const activeSendRef = useRef<ActiveSend | null>(null);
+  const sendResolveRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     hmacKeyRef.current = hmacKey;
   }, [hmacKey]);
 
+  // Helper: send chunks from a given offset
+  const sendChunks = useCallback(async (
+    ch: RTCDataChannel,
+    send: ActiveSend,
+    key: CryptoKey | null,
+  ) => {
+    let { byteOffset, chunkIndex } = send;
+
+    while (byteOffset < send.compressedSize) {
+      // Check channel is still open
+      if (ch.readyState !== "open") {
+        // Pause — save progress
+        send.byteOffset = byteOffset;
+        send.chunkIndex = chunkIndex;
+        setOutgoing((prev) =>
+          prev ? { ...prev, bytesSent: byteOffset, status: "paused" } : null
+        );
+        return; // Will resume via file-resume-req
+      }
+
+      // Flow control
+      if (ch.bufferedAmount > 65536) {
+        await new Promise<void>((resolve) => {
+          ch.bufferedAmountLowThreshold = 16384;
+          ch.onbufferedamountlow = () => {
+            ch.onbufferedamountlow = null;
+            resolve();
+          };
+        });
+      }
+
+      const end = Math.min(byteOffset + CHUNK_SIZE, send.compressedSize);
+      const chunk = await send.compressedBlob.slice(byteOffset, end).arrayBuffer();
+      const toSend = key ? await signChunk(key, chunk, send.id, chunkIndex) : chunk;
+      ch.send(toSend);
+      byteOffset = end;
+      chunkIndex++;
+
+      // Throttle progress updates
+      if (chunkIndex % 10 === 0 || byteOffset === send.compressedSize) {
+        send.byteOffset = byteOffset;
+        send.chunkIndex = chunkIndex;
+        setOutgoing((prev) =>
+          prev ? { ...prev, bytesSent: byteOffset } : null
+        );
+      }
+    }
+
+    // Complete
+    const endMsg = JSON.stringify({ type: "file-end", id: send.id });
+    ch.send(key ? await signMessage(key, endMsg) : endMsg);
+    send.completed = true;
+    send.byteOffset = byteOffset;
+    send.chunkIndex = chunkIndex;
+  }, []);
+
   useEffect(() => {
     channelRef.current = channel;
-    if (!channel) return;
+    if (!channel) {
+      // Channel dropped — mark pending transfers as paused
+      for (const entry of Object.values(pendingRef.current)) {
+        if (entry.status === "receiving") {
+          entry.status = "paused";
+        }
+      }
+      setIncoming((prev) =>
+        prev.map((f) =>
+          f.status === "receiving" ? { ...f, status: "paused" as FileTransferStatus } : f
+        )
+      );
+      return;
+    }
 
     channel.binaryType = "arraybuffer";
+
+    // On channel reconnect, request resume for any paused incoming transfers
+    const pausedIds = Object.entries(pendingRef.current)
+      .filter(([, e]) => e.status === "paused")
+      .map(([id, e]) => ({ id, receivedBytes: e.receivedBytes, chunkIndex: e.chunkIndex }));
+
+    if (pausedIds.length > 0) {
+      const key = hmacKeyRef.current;
+      for (const { id, receivedBytes, chunkIndex } of pausedIds) {
+        const msg = JSON.stringify({ type: "file-resume-req", id, receivedBytes, chunkIndex });
+        const send = async () => {
+          channel.send(key ? await signMessage(key, msg) : msg);
+        };
+        send().catch(() => {});
+      }
+    }
 
     const handler = async (e: MessageEvent) => {
       const key = hmacKeyRef.current;
 
       if (typeof e.data === "string") {
         try {
-          let parsed: { type: string; id: string; name?: string; size?: number; mimeType?: string };
+          let parsed: Record<string, unknown>;
           if (key) {
             const payload = await verifyMessage(key, e.data);
             if (!payload) {
@@ -68,40 +174,161 @@ export default function useFileTransfer(
             }
           }
 
-          if (parsed.type === "file-meta") {
-            pendingRef.current[parsed.id] = {
-              name: parsed.name!,
-              size: parsed.size!,
-              mimeType: parsed.mimeType!,
+          const msgType = parsed.type as string;
+
+          if (msgType === "file-meta") {
+            const id = parsed.id as string;
+            const compressedSize = (parsed.compressedSize as number) || (parsed.size as number);
+            const checksum = (parsed.checksum as string) || "";
+            pendingRef.current[id] = {
+              name: parsed.name as string,
+              size: parsed.size as number,
+              compressedSize,
+              mimeType: parsed.mimeType as string,
+              checksum,
               chunks: [],
-              received: 0,
+              receivedBytes: 0,
               chunkIndex: 0,
+              status: "receiving",
             };
             setIncoming((prev) => [
               ...prev,
-              { id: parsed.id, name: parsed.name!, size: parsed.size!, progress: 0, blobUrl: null },
+              {
+                id,
+                name: parsed.name as string,
+                size: parsed.size as number,
+                compressedSize,
+                progress: 0,
+                blobUrl: null,
+                status: "receiving",
+              },
             ]);
-          } else if (parsed.type === "file-end") {
-            const entry = pendingRef.current[parsed.id];
+          } else if (msgType === "file-end") {
+            const id = parsed.id as string;
+            const entry = pendingRef.current[id];
             if (!entry) return;
-            const blob = new Blob(entry.chunks, { type: entry.mimeType });
-            const blobUrl = URL.createObjectURL(blob);
-            blobUrlsRef.current.push(blobUrl);
-            delete pendingRef.current[parsed.id];
+
+            // Decompress and verify checksum (fall back to raw if not compressed)
+            try {
+              const rawBlob = new Blob(entry.chunks, { type: entry.mimeType });
+              let finalBlob: Blob;
+
+              if (entry.checksum) {
+                // Data was compressed — decompress and verify
+                try {
+                  finalBlob = await decompressBlob(rawBlob, entry.checksum);
+                } catch (decompErr) {
+                  console.warn("Decompression failed, using raw data:", decompErr);
+                  finalBlob = rawBlob;
+                }
+              } else {
+                // No checksum means uncompressed transfer (legacy or fallback)
+                finalBlob = rawBlob;
+              }
+
+              const blobUrl = URL.createObjectURL(
+                new Blob([finalBlob], { type: entry.mimeType })
+              );
+              blobUrlsRef.current.push(blobUrl);
+              delete pendingRef.current[id];
+              setIncoming((prev) =>
+                prev.map((f) =>
+                  f.id === id
+                    ? { ...f, progress: 1, blobUrl, status: "completed" as FileTransferStatus }
+                    : f
+                )
+              );
+              playFileComplete();
+            } catch (err) {
+              delete pendingRef.current[id];
+              setIncoming((prev) =>
+                prev.map((f) =>
+                  f.id === id
+                    ? { ...f, status: "failed" as FileTransferStatus, error: (err as Error).message }
+                    : f
+                )
+              );
+            }
+          } else if (msgType === "file-resume-req") {
+            // Peer wants us to resume sending from a specific point
+            const id = parsed.id as string;
+            const send = activeSendRef.current;
+            if (!send || send.id !== id || send.completed) return;
+
+            const resumeFromByte = parsed.receivedBytes as number;
+            const resumeFromChunk = parsed.chunkIndex as number;
+            send.byteOffset = resumeFromByte;
+            send.chunkIndex = resumeFromChunk;
+
+            // Send ack
+            const ackMsg = JSON.stringify({
+              type: "file-resume-ack",
+              id,
+              resumeFromByte,
+              resumeFromChunk,
+            });
+            channel.send(key ? await signMessage(key, ackMsg) : ackMsg);
+
+            // Resume sending
+            setOutgoing((prev) =>
+              prev ? { ...prev, bytesSent: resumeFromByte, status: "sending" } : null
+            );
+            sendChunks(channel, send, key).then(() => {
+              if (send.completed) {
+                activeSendRef.current = null;
+                sendLockRef.current = false;
+                setOutgoing(null);
+                sendResolveRef.current?.();
+                sendResolveRef.current = null;
+              }
+            });
+          } else if (msgType === "file-resume-ack") {
+            // Server acknowledged our resume request — update status
+            const id = parsed.id as string;
+            const entry = pendingRef.current[id];
+            if (entry) {
+              entry.status = "receiving";
+              entry.chunkIndex = parsed.resumeFromChunk as number;
+              entry.receivedBytes = parsed.resumeFromByte as number;
+              // Trim chunks to match the acknowledged byte offset
+              let bytes = 0;
+              let keepChunks = 0;
+              for (const chunk of entry.chunks) {
+                if (bytes + chunk.byteLength <= entry.receivedBytes) {
+                  bytes += chunk.byteLength;
+                  keepChunks++;
+                } else break;
+              }
+              entry.chunks = entry.chunks.slice(0, keepChunks);
+              entry.receivedBytes = bytes;
+            }
             setIncoming((prev) =>
               prev.map((f) =>
-                f.id === parsed.id ? { ...f, progress: 1, blobUrl } : f
+                f.id === id ? { ...f, status: "receiving" as FileTransferStatus } : f
               )
             );
-            playFileComplete();
+          } else if (msgType === "file-cancel") {
+            const id = parsed.id as string;
+            delete pendingRef.current[id];
+            setIncoming((prev) =>
+              prev.map((f) =>
+                f.id === id
+                  ? { ...f, status: "failed" as FileTransferStatus, error: "Cancelled by peer" }
+                  : f
+              )
+            );
           }
-        } catch { /* parse error */ }
+        } catch {
+          /* parse error */
+        }
       } else {
         // Binary chunk
         const ids = Object.keys(pendingRef.current);
         if (ids.length === 0) return;
-        const id = ids[ids.length - 1];
+        // Find the active receiving transfer
+        const id = ids.find((i) => pendingRef.current[i].status === "receiving") || ids[ids.length - 1];
         const entry = pendingRef.current[id];
+        if (!entry || entry.status !== "receiving") return;
 
         let chunkData: ArrayBuffer;
         if (key) {
@@ -112,28 +339,33 @@ export default function useFileTransfer(
           }
           chunkData = verified;
         } else {
-          // If data has HMAC prefix but no key, strip it; otherwise use raw
           chunkData = e.data as ArrayBuffer;
         }
 
         entry.chunks.push(chunkData);
-        entry.received += chunkData.byteLength;
+        entry.receivedBytes += chunkData.byteLength;
         entry.chunkIndex++;
-        const progress = Math.min(entry.received / entry.size, 1);
-        setIncoming((prev) =>
-          prev.map((f) => (f.id === id ? { ...f, progress } : f))
-        );
+
+        // Throttle progress updates
+        const now = Date.now();
+        if (now - ((entry as unknown as { lastUpdate: number }).lastUpdate || 0) > 100 || entry.receivedBytes >= entry.compressedSize) {
+          (entry as unknown as { lastUpdate: number }).lastUpdate = now;
+          const progress = Math.min(entry.receivedBytes / entry.compressedSize, 1);
+          setIncoming((prev) =>
+            prev.map((f) => (f.id === id ? { ...f, progress } : f))
+          );
+        }
       }
     };
 
     channel.addEventListener("message", handler);
     return () => {
       channel.removeEventListener("message", handler);
-      pendingRef.current = {};
+      // Don't clear pendingRef — paused transfers need to survive channel reconnect
     };
-  }, [channel]);
+  }, [channel, sendChunks]);
 
-  // Revoke blob URLs on unmount to prevent memory leaks
+  // Revoke blob URLs on unmount
   useEffect(() => {
     return () => {
       blobUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
@@ -142,49 +374,114 @@ export default function useFileTransfer(
   }, []);
 
   const sendFile = useCallback(async (file: File) => {
+    if (sendLockRef.current) return;
     const ch = channelRef.current;
     if (!ch || ch.readyState !== "open") return;
     const key = hmacKeyRef.current;
 
+    sendLockRef.current = true;
     const id = crypto.randomUUID();
-    const metaMsg = JSON.stringify({
-      type: "file-meta",
-      id,
-      name: file.name,
-      size: file.size,
-      mimeType: file.type || "application/octet-stream",
-    });
-    ch.send(key ? await signMessage(key, metaMsg) : metaMsg);
 
-    setOutgoing({ id, name: file.name, size: file.size, bytesSent: 0 });
+    try {
+      // Phase 1: Compress
+      setOutgoing({
+        id,
+        name: file.name,
+        size: file.size,
+        compressedSize: 0,
+        bytesSent: 0,
+        status: "compressing",
+      });
 
-    const buffer = await file.arrayBuffer();
-    let offset = 0;
-    let chunkIndex = 0;
-    while (offset < buffer.byteLength) {
-      // Flow control
-      if (ch.bufferedAmount > 65536) {
+      const { compressed, checksum, originalSize } = await compressFile(file);
+      const compressedSize = compressed.size;
+
+      // Store active send for potential resume
+      const send: ActiveSend = {
+        id,
+        name: file.name,
+        originalSize,
+        compressedBlob: compressed,
+        compressedSize,
+        checksum,
+        mimeType: file.type || "application/octet-stream",
+        chunkIndex: 0,
+        byteOffset: 0,
+        completed: false,
+      };
+      activeSendRef.current = send;
+
+      setOutgoing({
+        id,
+        name: file.name,
+        size: originalSize,
+        compressedSize,
+        bytesSent: 0,
+        status: "sending",
+      });
+
+      // Phase 2: Send metadata
+      const metaMsg = JSON.stringify({
+        type: "file-meta",
+        id,
+        name: file.name,
+        size: originalSize,
+        mimeType: file.type || "application/octet-stream",
+        compressedSize,
+        checksum,
+      });
+      ch.send(key ? await signMessage(key, metaMsg) : metaMsg);
+
+      // Phase 3: Send chunks
+      await sendChunks(ch, send, key);
+
+      if (send.completed) {
+        activeSendRef.current = null;
+        sendLockRef.current = false;
+        setOutgoing(null);
+      } else {
+        // Paused — wait for resume to complete
         await new Promise<void>((resolve) => {
-          ch.bufferedAmountLowThreshold = 16384;
-          ch.onbufferedamountlow = () => {
-            ch.onbufferedamountlow = null;
-            resolve();
-          };
+          sendResolveRef.current = resolve;
         });
       }
-      const end = Math.min(offset + CHUNK_SIZE, buffer.byteLength);
-      const chunk = buffer.slice(offset, end);
-      const toSend = key ? await signChunk(key, chunk, id, chunkIndex) : chunk;
-      ch.send(toSend);
-      offset = end;
-      chunkIndex++;
-      setOutgoing((prev) => (prev ? { ...prev, bytesSent: offset } : null));
+    } catch {
+      activeSendRef.current = null;
+      sendLockRef.current = false;
+      setOutgoing(null);
+    }
+  }, [sendChunks]);
+
+  const cancelTransfer = useCallback((id: string) => {
+    const ch = channelRef.current;
+    const key = hmacKeyRef.current;
+
+    // Cancel outgoing
+    if (activeSendRef.current?.id === id) {
+      activeSendRef.current = null;
+      sendLockRef.current = false;
+      setOutgoing(null);
+      sendResolveRef.current?.();
+      sendResolveRef.current = null;
     }
 
-    const endMsg = JSON.stringify({ type: "file-end", id });
-    ch.send(key ? await signMessage(key, endMsg) : endMsg);
-    setOutgoing(null);
+    // Cancel incoming
+    delete pendingRef.current[id];
+    setIncoming((prev) =>
+      prev.map((f) =>
+        f.id === id ? { ...f, status: "failed" as FileTransferStatus, error: "Cancelled" } : f
+      )
+    );
+
+    // Notify peer
+    if (ch && ch.readyState === "open") {
+      const msg = JSON.stringify({ type: "file-cancel", id });
+      const send = async () => {
+        ch.send(key ? await signMessage(key, msg) : msg);
+      };
+      send().catch(() => {});
+    }
   }, []);
 
-  return { incoming, outgoing, sendFile };
+  return { incoming, outgoing, sendFile, cancelTransfer };
 }

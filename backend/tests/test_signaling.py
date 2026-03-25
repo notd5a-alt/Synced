@@ -14,33 +14,33 @@ class TestSignalingRoom:
     """Unit tests for SignalingRoom logic."""
 
     def test_room_starts_empty(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         assert room.is_full is False
         assert len(room._peers) == 0
 
     def test_validate_rejects_oversized(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         huge = json.dumps({"type": "offer", "data": "x" * 70000})
         assert room._validate(huge) is False
 
     def test_validate_rejects_invalid_json(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         assert room._validate("not json{{{") is False
 
     def test_validate_rejects_unknown_type(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         assert room._validate(json.dumps({"type": "hack"})) is False
 
     def test_validate_accepts_offer(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         assert room._validate(json.dumps({"type": "offer", "sdp": "v=0..."})) is True
 
     def test_validate_accepts_answer(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         assert room._validate(json.dumps({"type": "answer", "sdp": "v=0..."})) is True
 
     def test_validate_accepts_ice_candidate(self):
-        room = SignalingRoom()
+        room = SignalingRoom("test")
         msg = json.dumps({"type": "ice-candidate", "candidate": "a=candidate:..."})
         assert room._validate(msg) is True
 
@@ -150,3 +150,35 @@ class TestSignalingWebSocket:
             # ws2 context exits (disconnects)
             msg = ws1.receive_json()
             assert msg["type"] == "peer-disconnected"
+
+    def test_token_protection(self):
+        client = TestClient(app)
+        # Host connects with a token
+        with client.websocket_connect("/ws?role=host&token=secret") as ws1:
+            # Another host tries to connect WITHOUT token or with WRONG token
+            with pytest.raises(Exception): # Starlette raises if connection is rejected/closed during connect
+                with client.websocket_connect("/ws?role=host&token=wrong") as ws2:
+                    pass
+            
+            # Another host tries to connect WITH CORRECT token - should succeed and replace ws1
+            with client.websocket_connect("/ws?role=host&token=secret") as ws3:
+                with pytest.raises(WebSocketDisconnect):
+                    ws1.receive_json()
+
+    def test_room_cleanup(self):
+        from backend.signaling import manager
+        import asyncio
+        
+        client = TestClient(app)
+        # Connect to a specific room
+        with client.websocket_connect("/ws/cleanup-room?role=host") as ws:
+            pass # Disconnect immediately
+        
+        # Room should be in manager initially (empty but exists)
+        assert "cleanup-room" in manager._rooms
+        
+        # Run cleanup manually
+        asyncio.run(manager.remove_empty_rooms())
+        
+        # Room should be gone
+        assert "cleanup-room" not in manager._rooms

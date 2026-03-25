@@ -22,10 +22,16 @@ export default function useVAD(
       return;
     }
     const audioTrack = localStream.getAudioTracks()[0];
-    if (!audioTrack) return;
+    if (!audioTrack) {
+        setLocalSpeaking(false);
+        return;
+    }
 
-    const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-    localCtxRef.current = ctx;
+    let ctx: AudioContext;
+    try {
+        ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    } catch { return; }
+
     const source = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -33,8 +39,9 @@ export default function useVAD(
     source.connect(analyser);
     const data = new Uint8Array(analyser.frequencyBinCount);
 
-    let holdTimeout: ReturnType<typeof setTimeout> | null = null;
+    let holdTimeout: any = null;
     const interval = setInterval(() => {
+      if (ctx.state === "suspended") ctx.resume();
       analyser.getByteFrequencyData(data);
       const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
       if (avg > THRESHOLD) {
@@ -51,7 +58,6 @@ export default function useVAD(
       if (holdTimeout) clearTimeout(holdTimeout);
       source.disconnect();
       ctx.close().catch(() => {});
-      localCtxRef.current = null;
     };
   }, [localStream]);
 
@@ -61,10 +67,16 @@ export default function useVAD(
       return;
     }
     const audioTrack = remoteStream.getAudioTracks()[0];
-    if (!audioTrack) return;
+    if (!audioTrack) {
+        setRemoteSpeaking(false);
+        return;
+    }
 
-    const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-    remoteCtxRef.current = ctx;
+    let ctx: AudioContext;
+    try {
+        ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    } catch { return; }
+
     const source = ctx.createMediaStreamSource(new MediaStream([audioTrack]));
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -72,8 +84,9 @@ export default function useVAD(
     source.connect(analyser);
     const data = new Uint8Array(analyser.frequencyBinCount);
 
-    let holdTimeout: ReturnType<typeof setTimeout> | null = null;
+    let holdTimeout: any = null;
     const interval = setInterval(() => {
+      if (ctx.state === "suspended") ctx.resume();
       analyser.getByteFrequencyData(data);
       const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
       if (avg > THRESHOLD) {
@@ -90,7 +103,6 @@ export default function useVAD(
       if (holdTimeout) clearTimeout(holdTimeout);
       source.disconnect();
       ctx.close().catch(() => {});
-      remoteCtxRef.current = null;
     };
   }, [remoteStream]);
 

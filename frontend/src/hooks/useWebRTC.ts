@@ -113,7 +113,8 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     setFileChannel(null);
     setLocalStream(null);
     setScreenStream(null);
-    setRemoteStream(null);
+    remoteStreamRef.current = new MediaStream();
+    setRemoteStream(remoteStreamRef.current);
     setCallError(null);
     setHmacKey(null);
     setAudioProcessing({ noiseSuppression: true, echoCancellation: true, autoGainControl: true });

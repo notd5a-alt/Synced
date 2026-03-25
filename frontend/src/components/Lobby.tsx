@@ -110,9 +110,13 @@ export default function Lobby({
           // URL: {signalingUrl || "none"}
         </div>
         <div style={{ maxHeight: "120px", overflowY: "auto" }}>
-          {debugLog.map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
+          {debugLog.map((line, i) => {
+            const lower = line.toLowerCase();
+            const isError = lower.includes("error") || lower.includes("fail") || lower.includes("closed") || lower.includes("disconnected") || lower.includes("ignored");
+            const isSuccess = lower.includes("connected") || lower.includes("open") || lower.includes("created") || lower.includes("sending") || lower.includes("init");
+            const color = isError ? "#f55" : isSuccess ? "#6f6" : "#0f0";
+            return <div key={i} style={{ color }}>{line}</div>;
+          })}
         </div>
       </div>
     </div>

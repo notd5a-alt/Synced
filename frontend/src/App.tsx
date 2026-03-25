@@ -5,11 +5,13 @@ import useConnectionMonitor from "./hooks/useConnectionMonitor";
 import useDataChannel from "./hooks/useDataChannel";
 import useFileTransfer from "./hooks/useFileTransfer";
 import useVAD from "./hooks/useVAD";
+import useTheme from "./hooks/useTheme";
 import Home from "./components/Home";
 import Lobby from "./components/Lobby";
 import Chat from "./components/Chat";
 import VideoCall from "./components/VideoCall";
 import FileShare from "./components/FileShare";
+import ThemeSelector from "./components/ThemeSelector";
 import { playPeerConnected, playPeerDisconnected } from "./utils/sounds";
 import type { PresenceStatus } from "./types";
 import "./styles/index.css";
@@ -25,11 +27,13 @@ export default function App() {
   const [hostAddr, setHostAddr] = useState("");
   const [activeTab, setActiveTab] = useState<Tab>("chat");
   const [fingerprint, setFingerprint] = useState<string | null>(null);
+  const [showThemePanel, setShowThemePanel] = useState(false);
   const sigConnectedRef = useRef(false);
 
   const signaling = useSignaling(sigUrl);
   const isHost = mode === "host";
   const webrtc = useWebRTC(signaling, isHost);
+  const theme = useTheme();
   const monitor = useConnectionMonitor(webrtc.pcRef, signaling.state, webrtc.connectionState);
   const chat = useDataChannel(webrtc.chatChannel, webrtc.hmacKey);
   const files = useFileTransfer(webrtc.fileChannel, webrtc.hmacKey);
@@ -256,6 +260,21 @@ export default function App() {
       case "/whoami":
         output = `Role: ${isHost ? "HOST" : "JOINER"}\nPeer presence: ${chat.peerPresence || "unknown"}`;
         break;
+      case "/theme": {
+        const themeName = parts[1]?.toLowerCase();
+        if (themeName) {
+          const found = theme.themes.find((t) => t.id === themeName || t.name.toLowerCase() === themeName);
+          if (found) {
+            theme.setTheme(found.id);
+            output = `Theme set to: ${found.name}`;
+          } else {
+            output = `Unknown theme: ${themeName}\nAvailable: ${theme.themes.map((t) => t.id).join(", ")}`;
+          }
+        } else {
+          output = `Current theme: ${theme.themeId}\nAvailable: ${theme.themes.map((t) => t.id).join(", ")}\nUsage: /theme <name>`;
+        }
+        break;
+      }
       case "/help":
         output = [
           "Available commands:",
@@ -264,6 +283,7 @@ export default function App() {
           "  /diag         — Open diagnostics panel",
           "  /stats        — Show connection stats",
           "  /whoami       — Show your role and peer status",
+          "  /theme [name] — Change color theme",
           "  /help         — Show this help",
         ].join("\n");
         break;
@@ -276,7 +296,7 @@ export default function App() {
       if (cmdOutputTimerRef.current) clearTimeout(cmdOutputTimerRef.current);
       cmdOutputTimerRef.current = setTimeout(() => setCmdOutput(null), 8000);
     }
-  }, [fingerprint, monitor.stats, monitor.connectionQuality, monitor.connectionType, isHost, chat.peerPresence, chat.clearMessages]);
+  }, [fingerprint, monitor.stats, monitor.connectionQuality, monitor.connectionType, isHost, chat.peerPresence, chat.clearMessages, theme]);
 
   const handleDisconnect = useCallback(() => {
     webrtc.cleanup();
@@ -300,7 +320,7 @@ export default function App() {
   }, [webrtc.cleanup, webrtc.init, monitor.setTimeoutExpired]);
 
   if (screen === "home") {
-    return <Home onHost={handleHost} onJoin={handleJoin} />;
+    return <Home onHost={handleHost} onJoin={handleJoin} themeId={theme.themeId} onThemeChange={theme.setTheme} />;
   }
 
   if (screen === "lobby") {
@@ -357,10 +377,22 @@ export default function App() {
             Files
           </button>
         </nav>
+        <button
+          className={`btn small ${showThemePanel ? "active" : ""}`}
+          onClick={() => setShowThemePanel((s) => !s)}
+        >
+          [ THEME ]
+        </button>
         <button className="btn small danger" onClick={handleDisconnect}>
           [ DISCONNECT ]
         </button>
       </header>
+
+      {showThemePanel && (
+        <div className="theme-panel">
+          <ThemeSelector currentTheme={theme.themeId} onSelect={theme.setTheme} />
+        </div>
+      )}
 
       {incomingCall && (
         <div className="incoming-call-pill">
@@ -446,6 +478,7 @@ export default function App() {
             incoming={files.incoming}
             outgoing={files.outgoing}
             onSendFile={files.sendFile}
+            onCancel={files.cancelTransfer}
           />
         )}
       </main>
