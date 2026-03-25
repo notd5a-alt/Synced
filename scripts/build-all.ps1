@@ -40,6 +40,14 @@ try {
 
 Write-Host ""
 
+# --- Step 0: Download prerequisites ---
+Write-Host "Step 0: Checking installer prerequisites..." -ForegroundColor Yellow
+& "$ProjectRoot\scripts\download-prerequisites.ps1"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  [WARN] Prerequisite download failed. The installer will download VC++ at install time instead." -ForegroundColor Yellow
+}
+Write-Host ""
+
 # --- Step 1: Build frontend ---
 Write-Host "Step 1/3: Building frontend..." -ForegroundColor Yellow
 Push-Location frontend
@@ -66,14 +74,22 @@ Pop-Location
 Write-Host ""
 
 # --- Done ---
+Write-Host "=== Build complete! ===" -ForegroundColor Green
+Write-Host "Installer(s):" -ForegroundColor Green
+
+$nsisFiles = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
 $msiFiles = Get-ChildItem -Path "src-tauri/target/release/bundle/msi/*.msi" -ErrorAction SilentlyContinue
-if ($msiFiles) {
-    Write-Host "=== Build complete! ===" -ForegroundColor Green
-    Write-Host "Installer(s):" -ForegroundColor Green
-    foreach ($msi in $msiFiles) {
-        Write-Host "  $($msi.FullName)" -ForegroundColor Green
-    }
-} else {
-    Write-Host "=== Build complete ===" -ForegroundColor Green
-    Write-Host "Check src-tauri/target/release/bundle/ for output files." -ForegroundColor Yellow
+$found = $false
+
+foreach ($f in $nsisFiles) {
+    Write-Host "  [NSIS] $($f.FullName)" -ForegroundColor Green
+    $found = $true
+}
+foreach ($f in $msiFiles) {
+    Write-Host "  [MSI]  $($f.FullName)" -ForegroundColor Green
+    $found = $true
+}
+
+if (-not $found) {
+    Write-Host "  Check src-tauri/target/release/bundle/ for output files." -ForegroundColor Yellow
 }

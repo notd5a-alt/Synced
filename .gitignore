@@ -10,6 +10,7 @@ certs/
 storybook-static/
 src-tauri/target/
 src-tauri/binaries/
+src-tauri/windows/prereqs/
 build/
 .claude/
 windowsbuild.txt
