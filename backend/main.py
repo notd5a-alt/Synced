@@ -64,7 +64,14 @@ async def websocket_endpoint(ws: WebSocket, role: str = "host"):
     await room.handle(ws, role)
 
 
-# Mount static files last (catch-all)
+# Mount static files last (catch-all).
+# When running inside a PyInstaller bundle, __file__ points to a temp dir,
+# so we also check sys._MEIPASS (PyInstaller's extraction root).
+import sys
+
 static_dir = Path(__file__).parent / "static"
+if not static_dir.is_dir() and hasattr(sys, "_MEIPASS"):
+    static_dir = Path(sys._MEIPASS) / "backend" / "static"
+
 if static_dir.is_dir():
     app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")

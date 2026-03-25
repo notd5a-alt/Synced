@@ -20,6 +20,7 @@ Set-Location $ProjectRoot
 pyinstaller `
     --onefile `
     --name ghostchat-server `
+    --add-data "backend/static;backend/static" `
     --distpath src-tauri/binaries `
     --workpath build/pyinstaller `
     --specpath build `
