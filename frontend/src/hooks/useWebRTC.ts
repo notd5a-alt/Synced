@@ -645,14 +645,55 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
   const toggleAudioProcessing = useCallback(async (key: keyof AudioProcessingState) => {
     const track = localStreamRef.current?.getAudioTracks()[0];
     if (!track) return;
+    const pc = pcRef.current;
+    if (!pc) return;
+
     // Read current value from track settings (not state) to avoid stale closure
     const currentSettings = track.getSettings();
     const nextVal = !(currentSettings[key] ?? true);
+
+    // Build constraints preserving current device + all processing settings
+    const constraints: MediaTrackConstraints = {
+      ...(currentSettings.deviceId ? { deviceId: { exact: currentSettings.deviceId } } : {}),
+      noiseSuppression: key === "noiseSuppression" ? nextVal : (currentSettings.noiseSuppression ?? true),
+      echoCancellation: key === "echoCancellation" ? nextVal : (currentSettings.echoCancellation ?? true),
+      autoGainControl: key === "autoGainControl" ? nextVal : (currentSettings.autoGainControl ?? true),
+    };
+
     try {
-      await track.applyConstraints({ [key]: nextVal });
-      setAudioProcessing((prev) => ({ ...prev, [key]: nextVal }));
-    } catch {
-      // Constraint not supported by this browser/device — don't update state
+      // Create a brand-new audio track with the desired constraints.
+      // Browsers set up NS/EC/AGC pipelines at track creation time and often
+      // cannot re-enable them via applyConstraints on an existing track,
+      // which causes the toggle to get stuck in the "off" position.
+      const newStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+      if (cleaningUpRef.current || !localStreamRef.current || pcRef.current !== pc) {
+        newStream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const newTrack = newStream.getAudioTracks()[0];
+
+      // Replace the track on the PC sender (no renegotiation needed)
+      const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+      }
+
+      // Stop old track and swap into the local stream
+      track.stop();
+      localStreamRef.current.removeTrack(track);
+      localStreamRef.current.addTrack(newTrack);
+      setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+
+      // Read actual settings from the new track — browser may not honor all constraints
+      const newSettings = newTrack.getSettings();
+      setAudioProcessing({
+        noiseSuppression: newSettings.noiseSuppression ?? true,
+        echoCancellation: newSettings.echoCancellation ?? true,
+        autoGainControl: newSettings.autoGainControl ?? true,
+      });
+    } catch (err) {
+      console.warn("toggleAudioProcessing failed:", err);
     }
   }, []);
 

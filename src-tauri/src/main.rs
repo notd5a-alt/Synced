@@ -14,7 +14,7 @@ struct SidecarState(Mutex<Option<CommandChild>>);
 
 const DEFAULT_PORT: u16 = 9876;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Known sidecar executable names (current and legacy) that are safe to kill.
 const KNOWN_SIDECAR_NAMES: &[&str] = &[
@@ -22,10 +22,24 @@ const KNOWN_SIDECAR_NAMES: &[&str] = &[
     "ghostchat-server",
 ];
 
+/// Quick check: is anything listening on the port?
+/// Returns in ~1ms if nothing is there (connection refused).
+fn port_in_use(port: u16) -> bool {
+    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+}
+
 /// Kill any stale **sidecar** process listening on the target port.
 /// Only kills processes whose name matches a known sidecar binary — never
 /// arbitrary processes that happen to share the port.
+///
+/// This is called in a background thread so it never blocks app startup.
 fn kill_stale_sidecar_on_port(port: u16) {
+    // Fast-path: if nothing is listening, skip the expensive netstat/lsof
+    if !port_in_use(port) {
+        return;
+    }
+
     #[cfg(windows)]
     {
         // Step 1: find PIDs listening on the exact port via netstat
@@ -51,6 +65,7 @@ fn kill_stale_sidecar_on_port(port: u16) {
         }
 
         // Step 2: for each PID, check the process image name before killing
+        let mut killed = false;
         for pid in pids {
             let query = std::process::Command::new("tasklist")
                 .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
@@ -65,10 +80,16 @@ fn kill_stale_sidecar_on_port(port: u16) {
                     let _ = std::process::Command::new("taskkill")
                         .args(["/F", "/PID", &pid.to_string()])
                         .output();
+                    killed = true;
                 } else {
                     eprintln!("[tauri] port {} held by non-sidecar process (pid {}), skipping", port, pid);
                 }
             }
+        }
+
+        // Only sleep if we actually killed something — let the OS reclaim the port
+        if killed {
+            std::thread::sleep(Duration::from_millis(300));
         }
     }
     #[cfg(unix)]
@@ -90,6 +111,7 @@ fn kill_stale_sidecar_on_port(port: u16) {
         }
 
         // Step 2: check process name via /proc (Linux) or ps (macOS) before killing
+        let mut killed = false;
         for pid in pids {
             let name = get_process_name_unix(pid);
             let is_sidecar = KNOWN_SIDECAR_NAMES
@@ -100,14 +122,17 @@ fn kill_stale_sidecar_on_port(port: u16) {
                 let _ = std::process::Command::new("kill")
                     .args(["-9", &pid.to_string()])
                     .output();
+                killed = true;
             } else {
                 eprintln!("[tauri] port {} held by non-sidecar process '{}' (pid {}), skipping", port, name, pid);
             }
         }
-    }
 
-    // Small delay to let the OS reclaim the port
-    std::thread::sleep(Duration::from_millis(500));
+        // Only sleep if we actually killed something
+        if killed {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
 }
 
 /// Read the process name for a given PID on Unix platforms.
@@ -235,6 +260,14 @@ mod job_object {
     }
 }
 
+/// Inject a loading spinner into the webview via JavaScript.
+/// Called after the initial frontendDist page loads (which may show briefly).
+fn show_loading_page(window: &tauri::WebviewWindow) {
+    let _ = window.eval(r#"
+        document.documentElement.innerHTML = '<head><style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0a;color:#00ff00;font-family:monospace;flex-direction:column;gap:16px}.s{width:32px;height:32px;border:3px solid #003300;border-top-color:#00ff00;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.t{font-size:14px;opacity:.7}</style></head><body><div class="s"></div><div class="t">Starting Synced...</div></body>';
+    "#);
+}
+
 fn main() {
     let port = parse_port();
 
@@ -242,11 +275,17 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
             let app_handle = app.handle().clone();
-            if is_production() {
-                // Kill any stale sidecar from a previous install still holding the port
-                kill_stale_sidecar_on_port(port);
 
-                // Production: spawn the Python sidecar (FastAPI backend)
+            if is_production() {
+                // Kill any stale sidecar in a background thread — don't block startup.
+                // The sidecar spawn below will retry connecting even if the port is
+                // briefly occupied; the polling loop handles the race.
+                let stale_port = port;
+                std::thread::spawn(move || {
+                    kill_stale_sidecar_on_port(stale_port);
+                });
+
+                // Spawn the Python sidecar (FastAPI backend) immediately
                 let sidecar_cmd = app
                     .shell()
                     .sidecar("synced-server")
@@ -298,26 +337,44 @@ fn main() {
                 app.manage(SidecarState(Mutex::new(None)));
             }
 
-            // Poll until the backend is ready in a background task to avoid blocking the main thread
+            // Poll until the backend is ready (async — doesn't block the main thread)
             tauri::async_runtime::spawn(async move {
                 let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
                 let deadline = Instant::now() + SIDECAR_TIMEOUT;
                 let mut ready = false;
+                let mut shown_loading = false;
 
                 while Instant::now() < deadline {
-                    if TcpStream::connect_timeout(&addr, POLL_INTERVAL).is_ok() {
+                    if TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok() {
                         ready = true;
                         break;
                     }
-                    std::thread::sleep(POLL_INTERVAL);
+
+                    // After the first poll failure, inject a loading spinner
+                    // (the frontendDist HTML has loaded by now so DOM exists)
+                    if !shown_loading && is_production() {
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            show_loading_page(&window);
+                        }
+                        shown_loading = true;
+                    }
+
+                    // Use tokio sleep so we don't block the async runtime thread
+                    tokio::time::sleep(POLL_INTERVAL).await;
                 }
 
                 if !ready {
                     eprintln!("ERROR: backend not reachable on port {} within {:?}", port, SIDECAR_TIMEOUT);
+                    // Show error in the window so the user knows what happened
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.eval(r#"
+                            document.documentElement.innerHTML = '<head><style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0a;color:#ff4444;font-family:monospace;flex-direction:column;gap:8px}</style></head><body><h2>Startup Error</h2><p>Backend failed to start within 15 seconds.</p><p>Please restart the app.</p></body>';
+                        "#);
+                    }
                     return;
                 }
 
-                // In production, navigate to the backend (devUrl handles this in dev mode)
+                // Navigate to the backend
                 if is_production() {
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let url: tauri::Url = format!("http://localhost:{}", port).parse().unwrap();

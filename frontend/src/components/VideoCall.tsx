@@ -23,6 +23,8 @@ interface VideoCallProps {
   signalingState: string;
   audioProcessing: AudioProcessingState;
   onToggleAudioProcessing: (key: keyof AudioProcessingState) => Promise<void>;
+  aiNsEnabled: boolean;
+  onToggleAiNs: () => Promise<void>;
   stats: ConnectionStats | null;
   localSpeaking: boolean;
   remoteSpeaking: boolean;
@@ -49,6 +51,8 @@ export default function VideoCall({
   signalingState,
   audioProcessing,
   onToggleAudioProcessing,
+  aiNsEnabled,
+  onToggleAiNs,
   stats,
   localSpeaking,
   remoteSpeaking,
@@ -310,6 +314,13 @@ export default function VideoCall({
                 onClick={() => onToggleAudioProcessing("echoCancellation")}
               >
                 {audioProcessing?.echoCancellation ? "[ EC ON ]" : "[ EC OFF ]"}
+              </button>
+              <button
+                className={`btn ${aiNsEnabled ? "active" : "muted"}`}
+                onClick={onToggleAiNs}
+                title="AI Noise Suppression (RNNoise neural network)"
+              >
+                {aiNsEnabled ? "[ AI NS ON ]" : "[ AI NS ]"}
               </button>
               <button
                 className={`btn ${showDevices ? "active" : ""}`}

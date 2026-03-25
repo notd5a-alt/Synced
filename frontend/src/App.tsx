@@ -4,6 +4,7 @@ import useWebRTC from "./hooks/useWebRTC";
 import useConnectionMonitor from "./hooks/useConnectionMonitor";
 import useDataChannel from "./hooks/useDataChannel";
 import useFileTransfer from "./hooks/useFileTransfer";
+import useNoiseSuppression, { preloadRnnoise } from "./hooks/useNoiseSuppression";
 import useVAD from "./hooks/useVAD";
 import useTheme from "./hooks/useTheme";
 import useAudioDevices from "./hooks/useAudioDevices";
@@ -14,7 +15,7 @@ import Chat from "./components/Chat";
 import VideoCall from "./components/VideoCall";
 import FileShare from "./components/FileShare";
 import ThemeSelector from "./components/ThemeSelector";
-import { playPeerConnected, playPeerDisconnected } from "./utils/sounds";
+import { playPeerConnected, playPeerDisconnected, warmUpAudio, preloadRingtone, startRingtone, stopRingtone } from "./utils/sounds";
 import type { PresenceStatus } from "./types";
 import "./styles/index.css";
 
@@ -48,6 +49,7 @@ export default function App() {
     webrtc.setLocalStream,
   );
   const micLevel = useMicLevel(webrtc.localStream);
+  const noiseSuppression = useNoiseSuppression();
 
   // Transition to session once WebRTC connects
   useEffect(() => {
@@ -66,6 +68,7 @@ export default function App() {
         webrtc.connectionState === "new"
       ) {
         playPeerDisconnected();
+        noiseSuppression.teardown();
         setScreen("home");
         setMode(null);
         setSigUrl(null);
@@ -76,7 +79,14 @@ export default function App() {
 
   const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
 
+  // Pre-load ringtone audio and RNNoise WASM on mount
+  useEffect(() => {
+    preloadRingtone();
+    preloadRnnoise();
+  }, []);
+
   const handleHost = useCallback(async () => {
+    warmUpAudio(); // Unlock AudioContext on user gesture
     setMode("host");
     try {
       const res = await fetch("/api/info");
@@ -92,6 +102,7 @@ export default function App() {
   }, [wsProto]);
 
   const handleJoin = useCallback((addr: string) => {
+    warmUpAudio(); // Unlock AudioContext on user gesture
     setMode("join");
     // When joining a different address, the WebSocket goes directly to the
     // backend (not through Vite proxy), so always use ws:// (backend is HTTP-only).
@@ -153,13 +164,8 @@ export default function App() {
 
   useEffect(() => {
     if (incomingCall) {
-      const audio = new Audio("/ringtone.wav");
-      audio.play().catch(() => {});
-      return () => {
-        audio.pause();
-        audio.currentTime = 0;
-        audio.src = "";
-      };
+      startRingtone();
+      return () => stopRingtone();
     }
   }, [incomingCall]);
 
@@ -309,6 +315,7 @@ export default function App() {
   }, [fingerprint, monitor.stats, monitor.connectionQuality, monitor.connectionType, isHost, chat.peerPresence, chat.clearMessages, theme]);
 
   const handleDisconnect = useCallback(() => {
+    noiseSuppression.teardown();
     webrtc.cleanup();
     signaling.disconnect();
     setScreen("home");
@@ -317,7 +324,7 @@ export default function App() {
     setHostAddr("");
     setFingerprint(null);
     chat.clearMessages();
-  }, [webrtc.cleanup, signaling.disconnect, chat.clearMessages]);
+  }, [webrtc.cleanup, signaling.disconnect, chat.clearMessages, noiseSuppression.teardown]);
 
   const handleRetry = useCallback(() => {
     webrtc.cleanup();
@@ -478,6 +485,17 @@ export default function App() {
             signalingState={signaling.state}
             audioProcessing={webrtc.audioProcessing}
             onToggleAudioProcessing={webrtc.toggleAudioProcessing}
+            aiNsEnabled={noiseSuppression.enabled}
+            onToggleAiNs={async () => {
+              const track = webrtc.localStreamRef.current?.getAudioTracks()[0];
+              if (!track) return;
+              const newTrack = await noiseSuppression.toggle(track, webrtc.pcRef, webrtc.localStreamRef);
+              if (newTrack) {
+                webrtc.setLocalStream((s) =>
+                  s ? new MediaStream(s.getTracks()) : s,
+                );
+              }
+            }}
             stats={monitor.stats}
             localSpeaking={vad.localSpeaking}
             remoteSpeaking={vad.remoteSpeaking}

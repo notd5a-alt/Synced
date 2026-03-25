@@ -1,11 +1,116 @@
 // Terminal-aesthetic sound effects via Web Audio API oscillators
 // No audio files needed — all sounds generated programmatically
+// Exception: the incoming call ringtone uses a WAV file decoded into an AudioBuffer
 
 let ctx: AudioContext | null = null;
 
 function getCtx(): AudioContext {
   if (!ctx) ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+  // Resume suspended context (browsers suspend until user gesture)
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
   return ctx;
+}
+
+// ── Warm-up: call this on ANY user gesture (click/tap) to unlock AudioContext ──
+// This ensures the context is "running" before we need to play the ringtone.
+export function warmUpAudio(): void {
+  try {
+    const c = getCtx();
+    if (c.state === "suspended") c.resume().catch(() => {});
+  } catch {
+    // AudioContext not available
+  }
+}
+
+// ── Incoming call ringtone (looping WAV via Web Audio API) ──
+// Pre-decoded AudioBuffer avoids autoplay issues since we reuse the
+// already-unlocked AudioContext instead of creating a new HTMLAudioElement.
+
+let ringtoneBuffer: AudioBuffer | null = null;
+let ringtoneSource: AudioBufferSourceNode | null = null;
+let ringtoneGain: GainNode | null = null;
+let ringtoneLoading = false;
+
+/** Pre-fetch and decode the ringtone WAV. Call early (e.g., on page load). */
+export function preloadRingtone(): void {
+  if (ringtoneBuffer || ringtoneLoading) return;
+  ringtoneLoading = true;
+  fetch("/ringtone.wav")
+    .then((r) => r.arrayBuffer())
+    .then((buf) => getCtx().decodeAudioData(buf))
+    .then((decoded) => {
+      ringtoneBuffer = decoded;
+    })
+    .catch(() => {
+      ringtoneLoading = false;
+    });
+}
+
+/** Start playing the ringtone in a loop. Safe to call multiple times. */
+export function startRingtone(): void {
+  // Already playing
+  if (ringtoneSource) return;
+
+  try {
+    const c = getCtx();
+    if (c.state === "suspended") c.resume().catch(() => {});
+
+    if (!ringtoneBuffer) {
+      // Buffer not ready — try to load now, then play when ready
+      if (!ringtoneLoading) preloadRingtone();
+      // Fallback: play a simple oscillator ringtone pattern
+      _playFallbackRing();
+      return;
+    }
+
+    const source = c.createBufferSource();
+    source.buffer = ringtoneBuffer;
+    source.loop = true;
+
+    const gain = c.createGain();
+    gain.gain.setValueAtTime(0.4, c.currentTime);
+    source.connect(gain);
+    gain.connect(c.destination);
+    source.start(0);
+
+    ringtoneSource = source;
+    ringtoneGain = gain;
+  } catch {
+    // AudioContext not available — silent fail
+  }
+}
+
+/** Stop the ringtone. */
+export function stopRingtone(): void {
+  if (ringtoneSource) {
+    try {
+      ringtoneSource.stop();
+      ringtoneSource.disconnect();
+    } catch { /* already stopped */ }
+    ringtoneSource = null;
+  }
+  if (ringtoneGain) {
+    try { ringtoneGain.disconnect(); } catch { /* ok */ }
+    ringtoneGain = null;
+  }
+  // Also stop the fallback interval if active
+  if (_fallbackTimer !== null) {
+    clearInterval(_fallbackTimer);
+    _fallbackTimer = null;
+  }
+}
+
+// Fallback ringtone using oscillators (if WAV hasn't loaded yet)
+let _fallbackTimer: ReturnType<typeof setInterval> | null = null;
+function _playFallbackRing(): void {
+  if (_fallbackTimer !== null) return;
+  // Play immediately then repeat
+  const ring = () => {
+    beep(880, 0.15, "sine", 0.15);
+    setTimeout(() => beep(880, 0.15, "sine", 0.15), 200);
+  };
+  ring();
+  _fallbackTimer = setInterval(ring, 1500);
 }
 
 function beep(freq: number, duration: number, type: OscillatorType = "sine", volume: number = 0.15): void {
