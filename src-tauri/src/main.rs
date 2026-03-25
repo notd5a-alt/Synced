@@ -52,7 +52,7 @@ fn kill_sidecar(state: &SidecarState) {
 #[cfg(windows)]
 mod job_object {
     use std::sync::Mutex;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, FALSE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -65,7 +65,7 @@ mod job_object {
     unsafe impl Sync for SafeHandle {}
     impl Drop for SafeHandle {
         fn drop(&mut self) {
-            if self.0 != 0 && self.0 != INVALID_HANDLE_VALUE {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
                 unsafe { CloseHandle(self.0) };
             }
         }
@@ -79,7 +79,7 @@ mod job_object {
     pub fn assign_child_to_job(child_pid: u32) -> Option<JobObjectState> {
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job == 0 || job == INVALID_HANDLE_VALUE {
+            if job.is_null() || job == INVALID_HANDLE_VALUE {
                 eprintln!("[tauri] failed to create job object");
                 return None;
             }
@@ -101,8 +101,8 @@ mod job_object {
 
             // Open child process and assign to job
             use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
-            let child_handle = OpenProcess(PROCESS_ALL_ACCESS, 0, child_pid);
-            if child_handle == 0 || child_handle == INVALID_HANDLE_VALUE {
+            let child_handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, child_pid);
+            if child_handle.is_null() || child_handle == INVALID_HANDLE_VALUE {
                 eprintln!("[tauri] failed to open child process {}", child_pid);
                 CloseHandle(job);
                 return None;
