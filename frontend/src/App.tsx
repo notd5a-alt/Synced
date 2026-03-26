@@ -170,18 +170,18 @@ export default function App() {
   }, [sigUrl, signaling.state, signaling.connect]);
 
   // Init WebRTC once signaling is open — fetch ICE config from backend first.
-  // reinitCounter bumps on cleanup() so we also re-init after peer-disconnected
-  // (connectionState may already be "new" if no answer was received, so it
-  // can't be used as the trigger).
+  // Only fires when signaling.state transitions to "open" (initial connect or
+  // reconnect after disconnect). handleRetry() calls init() directly for retries.
   useEffect(() => {
     if (signaling.state === "open") {
-      signaling.addLog(`effect: init (reinit=${webrtc.reinitCounter})`);
+      signaling.addLog("effect: init");
       fetch(`${getApiBaseUrl()}/api/ice-config`)
         .then((r) => r.json())
         .then((config) => webrtc.init(config))
         .catch(() => webrtc.init(null));
     }
-  }, [signaling.state, webrtc.reinitCounter, webrtc.init, signaling.addLog]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signaling.state, webrtc.init, signaling.addLog]);
 
   // Play ringtone when peer is in a call but local user hasn't joined yet
   const hasRemoteTracks = webrtc.remoteStream

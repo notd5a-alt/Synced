@@ -145,6 +145,7 @@ export default function useSignaling(url: string | null): SignalingHook {
     wsRef.current = null;
     queueRef.current = [];
     sendQueueRef.current = [];
+    onMessageRef.current = null;
     setState("closed");
   }, []);
 
