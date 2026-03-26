@@ -242,17 +242,6 @@ export default function VideoCall({
         {hasDualVideo && expandedView !== null && (
           <span className="expanded-video-hint">Click to return to split view</span>
         )}
-        {/* Single remote screen (no camera) */}
-        {!hasDualVideo && hasRemoteScreen && !hasRemoteVideo && inCall && (
-          <video
-            autoPlay
-            playsInline
-            muted
-            ref={(el) => { if (el && remoteScreenStream) el.srcObject = remoteScreenStream; }}
-            className="remote-video"
-            style={{ display: "block" }}
-          />
-        )}
         {inCall && !hasRemoteVideo && !hasRemoteScreen && (
           <AudioVisualizer stream={remoteStream} />
         )}

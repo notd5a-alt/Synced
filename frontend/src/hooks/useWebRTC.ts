@@ -60,7 +60,7 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
   const [remoteStream, setRemoteStream] = useState<MediaStream>(remoteStreamRef.current);
   const remoteScreenStreamRef = useRef<MediaStream>(new MediaStream());
   const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
-  const screenTrackIdRef = useRef<string | null>(null);
+  const pendingScreenTrackRef = useRef(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
@@ -101,7 +101,7 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     screenVideoSenderRef.current = null;
     cameraVideoSenderRef.current = null;
     sharingInProgressRef.current = false;
-    screenTrackIdRef.current = null;
+    pendingScreenTrackRef.current = false;
     // Clear track event handlers to prevent leaks
     const pc = pcRef.current;
     if (pc) {
@@ -205,7 +205,8 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     // Remote media tracks — route screen share tracks to a separate stream
     // based on track ID sent via signaling (contentHint doesn't propagate over WebRTC).
     pc.ontrack = (e) => {
-      const isScreen = e.track.kind === "video" && e.track.id === screenTrackIdRef.current;
+      const isScreen = e.track.kind === "video" && pendingScreenTrackRef.current;
+      if (isScreen) pendingScreenTrackRef.current = false;
       const targetRef = isScreen ? remoteScreenStreamRef : remoteStreamRef;
       const target = targetRef.current;
       const setter = isScreen ? setRemoteScreenStream : setRemoteStream;
@@ -214,6 +215,15 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
         target.addTrack(e.track);
         setter(new MediaStream(target.getTracks()));
       }
+
+      // Force re-render on mute/unmute so App.tsx hasRemoteTracks re-evaluates
+      // (tracks arrive muted, unmute when media flows, mute when remote ends call)
+      const triggerUpdate = () => {
+        const s = targetRef.current;
+        setter(new MediaStream(s.getTracks()));
+      };
+      e.track.onmute = triggerUpdate;
+      e.track.onunmute = triggerUpdate;
 
       e.track.onended = () => {
         // Check both streams and remove from whichever contains the track
@@ -386,11 +396,15 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
             log("RTC joiner waiting for offer");
           }
         } else if (msg.type === "screen-sharing") {
-          // Peer is sharing/stopping screen — store track ID for ontrack routing
-          if (msg.active && msg.trackId) {
-            screenTrackIdRef.current = msg.trackId;
+          // Peer is sharing/stopping screen — flag for ontrack routing
+          if (msg.active) {
+            pendingScreenTrackRef.current = true;
           } else {
-            screenTrackIdRef.current = null;
+            pendingScreenTrackRef.current = false;
+            // Clean up screen stream when peer stops sharing
+            const screenStream = remoteScreenStreamRef.current;
+            screenStream.getTracks().forEach((t) => screenStream.removeTrack(t));
+            setRemoteScreenStream(null);
           }
         } else if (msg.type === "peer-disconnected") {
           peerPresent = false;

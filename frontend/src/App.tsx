@@ -183,18 +183,29 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signaling.state, webrtc.init, signaling.addLog]);
 
-  // Play ringtone when peer is in a call but local user hasn't joined yet
+  // Ringtone logic — plays for both caller (ringback) and receiver (incoming)
   const hasRemoteTracks = webrtc.remoteStream
     ?.getTracks()
     .some((t) => t.readyState === "live" && !t.muted);
   const wasInCallRef = useRef(false);
   const [callRejected, setCallRejected] = useState(false);
+  const peerEverJoinedCallRef = useRef(false);
 
   useEffect(() => {
     if (webrtc.localStream) {
       wasInCallRef.current = true;
     }
   }, [webrtc.localStream]);
+
+  // Track whether the remote peer ever answered (prevents ringtone after mid-call hangup)
+  useEffect(() => {
+    if (hasRemoteTracks && webrtc.localStream) {
+      peerEverJoinedCallRef.current = true;
+    }
+    if (!webrtc.localStream) {
+      peerEverJoinedCallRef.current = false;
+    }
+  }, [hasRemoteTracks, webrtc.localStream]);
 
   // Reset when remote tracks disappear (peer ended their call)
   useEffect(() => {
@@ -205,13 +216,18 @@ export default function App() {
   }, [hasRemoteTracks]);
 
   const incomingCall = hasRemoteTracks && !webrtc.localStream && !wasInCallRef.current && !callRejected;
+  const outgoingRinging = screen === "session"
+    && !!webrtc.localStream
+    && !hasRemoteTracks
+    && !peerEverJoinedCallRef.current;
+  const ringing = incomingCall || outgoingRinging;
 
   useEffect(() => {
-    if (incomingCall) {
+    if (ringing) {
       startRingtone();
       return () => stopRingtone();
     }
-  }, [incomingCall]);
+  }, [ringing]);
 
   // Unread message notification when not on chat tab
   const [lastSeenSeq, setLastSeenSeq] = useState(0);
