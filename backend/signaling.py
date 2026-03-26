@@ -212,7 +212,7 @@ class SignalingRoom:
                 msg = self._validate(data)
                 if msg is not None:
                     msg_type = msg.get("type")
-                    if msg_type in {"offer", "answer", "ice-candidate"}:
+                    if msg_type in {"offer", "answer", "ice-candidate", "screen-sharing"}:
                         await self.relay(ws, data, msg_type)
                     elif msg_type == "pong":
                         # Update pong timestamp for heartbeat timeout detection

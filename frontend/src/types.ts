@@ -4,11 +4,15 @@
 
 export type SignalingState = "closed" | "connecting" | "open" | "reconnecting";
 
-export interface SignalingMessage {
-  type: "offer" | "answer" | "ice-candidate" | "peer-joined" | "peer-disconnected" | "ping" | "pong";
-  sdp?: string;
-  candidate?: RTCIceCandidateInit;
-}
+export type SignalingMessage =
+  | { type: "offer"; sdp?: string; candidate?: never }
+  | { type: "answer"; sdp?: string; candidate?: never }
+  | { type: "ice-candidate"; candidate?: RTCIceCandidateInit; sdp?: never }
+  | { type: "peer-joined" }
+  | { type: "peer-disconnected" }
+  | { type: "ping" }
+  | { type: "pong" }
+  | { type: "screen-sharing"; active: boolean; trackId?: string };
 
 export interface SignalingHook {
   connect: () => void;

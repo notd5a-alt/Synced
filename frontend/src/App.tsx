@@ -470,6 +470,7 @@ export default function App() {
           <VideoCall
             localStream={webrtc.localStream}
             remoteStream={webrtc.remoteStream}
+            remoteScreenStream={webrtc.remoteScreenStream}
             screenStream={webrtc.screenStream}
             onStartCall={webrtc.startCall}
             onEndCall={webrtc.endCall}

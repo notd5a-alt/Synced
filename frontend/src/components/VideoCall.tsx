@@ -8,6 +8,7 @@ import type { AudioDevicesHook } from "../hooks/useAudioDevices";
 interface VideoCallProps {
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
+  remoteScreenStream: MediaStream | null;
   screenStream: MediaStream | null;
   onStartCall: (withVideo?: boolean) => Promise<void>;
   onEndCall: () => void;
@@ -36,6 +37,7 @@ interface VideoCallProps {
 export default function VideoCall({
   localStream,
   remoteStream,
+  remoteScreenStream,
   screenStream,
   onStartCall,
   onEndCall,
@@ -62,6 +64,7 @@ export default function VideoCall({
 }: VideoCallProps) {
   const localRef = useRef<HTMLVideoElement>(null);
   const remoteRef = useRef<HTMLVideoElement>(null);
+  const remoteScreenRef = useRef<HTMLVideoElement>(null);
   const screenRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [deafened, setDeafened] = useState(false);
@@ -69,6 +72,7 @@ export default function VideoCall({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showDiag, setShowDiag] = useState(false);
   const [showDevices, setShowDevices] = useState(false);
+  const [expandedView, setExpandedView] = useState<"camera" | "screen" | null>(null);
 
   // Share remoteRef with parent so useAudioDevices can call setSinkId on it
   useEffect(() => {
@@ -90,12 +94,29 @@ export default function VideoCall({
     .some((t) => t.readyState === "live" && !t.muted);
 
   useEffect(() => {
+    if (remoteScreenRef.current) {
+      remoteScreenRef.current.srcObject = remoteScreenStream || null;
+    }
+  }, [remoteScreenStream]);
+
+  const hasRemoteScreen = remoteScreenStream
+    ?.getVideoTracks()
+    .some((t) => t.readyState === "live" && !t.muted);
+  const hasDualVideo = !!hasRemoteVideo && !!hasRemoteScreen;
+
+  // Reset expanded view when dual video mode ends
+  useEffect(() => {
+    if (!hasDualVideo) setExpandedView(null);
+  }, [hasDualVideo]);
+
+  useEffect(() => {
     if (screenRef.current) screenRef.current.srcObject = screenStream || null;
   }, [screenStream]);
 
   const hasRemoteTracks = remoteStream
     ?.getTracks()
-    .some((t) => t.readyState === "live" && !t.muted);
+    .some((t) => t.readyState === "live" && !t.muted)
+    || hasRemoteScreen;
 
   const audioEnabled = localStream?.getAudioTracks()[0]?.enabled;
   const hasVideo = localStream?.getVideoTracks().some((t) => t.readyState === "live" && !t.muted);
@@ -165,16 +186,74 @@ export default function VideoCall({
   return (
     <div className="video-call" ref={containerRef}>
       <div className="video-container">
-        {/* Always-mounted for audio; hidden when no live remote video */}
+        {/* Always-mounted remote camera video (also carries audio) */}
         <video
           ref={remoteRef}
           className={`remote-video ${remoteSpeaking ? "speaking" : ""}`}
           autoPlay
           playsInline
           muted={deafened}
-          style={{ display: hasRemoteVideo ? "block" : "none" }}
+          style={{
+            display: hasRemoteVideo && !hasDualVideo ? "block"
+              : hasDualVideo && expandedView === "camera" ? "block"
+              : "none",
+            cursor: expandedView === "camera" ? "pointer" : "default",
+          }}
+          onClick={expandedView === "camera" ? () => setExpandedView(null) : undefined}
         />
-        {inCall && !hasRemoteVideo && (
+        {/* Always-mounted remote screen share video */}
+        <video
+          ref={remoteScreenRef}
+          className="remote-video"
+          autoPlay
+          playsInline
+          style={{
+            display: !hasDualVideo && hasRemoteScreen && !hasRemoteVideo ? "block"
+              : hasDualVideo && expandedView === "screen" ? "block"
+              : "none",
+            cursor: expandedView === "screen" ? "pointer" : "default",
+          }}
+          onClick={expandedView === "screen" ? () => setExpandedView(null) : undefined}
+        />
+        {/* Dual video side-by-side layout */}
+        {hasDualVideo && expandedView === null && (
+          <div className="dual-video-container">
+            <div className="dual-video-item" onClick={() => setExpandedView("camera")}>
+              <video
+                autoPlay
+                playsInline
+                muted
+                ref={(el) => { if (el && remoteStream) el.srcObject = remoteStream; }}
+              />
+              <span className="dual-video-label">CAMERA</span>
+            </div>
+            <div className="dual-video-item" onClick={() => setExpandedView("screen")}>
+              <video
+                autoPlay
+                playsInline
+                muted
+                ref={(el) => { if (el && remoteScreenStream) el.srcObject = remoteScreenStream; }}
+              />
+              <span className="dual-video-label">SCREEN</span>
+            </div>
+          </div>
+        )}
+        {/* Expanded view hint */}
+        {hasDualVideo && expandedView !== null && (
+          <span className="expanded-video-hint">Click to return to split view</span>
+        )}
+        {/* Single remote screen (no camera) */}
+        {!hasDualVideo && hasRemoteScreen && !hasRemoteVideo && inCall && (
+          <video
+            autoPlay
+            playsInline
+            muted
+            ref={(el) => { if (el && remoteScreenStream) el.srcObject = remoteScreenStream; }}
+            className="remote-video"
+            style={{ display: "block" }}
+          />
+        )}
+        {inCall && !hasRemoteVideo && !hasRemoteScreen && (
           <AudioVisualizer stream={remoteStream} />
         )}
         {connectionType && inCall && (
@@ -193,7 +272,7 @@ export default function VideoCall({
               : "Bad"}
           </span>
         )}
-        {hasRemoteTracks && !hasRemoteVideo && inCall && (
+        {hasRemoteTracks && !hasRemoteVideo && !hasRemoteScreen && inCall && (
           <div className={`call-status-badge ${remoteSpeaking ? "speaking" : ""}`}>
             {remoteSpeaking ? "Peer Speaking" : "Voice Call Active"}
           </div>

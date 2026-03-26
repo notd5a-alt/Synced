@@ -13,6 +13,7 @@ export interface WebRTCHook {
   chatChannel: RTCDataChannel | null;
   fileChannel: RTCDataChannel | null;
   remoteStream: MediaStream | null;
+  remoteScreenStream: MediaStream | null;
   localStream: MediaStream | null;
   startCall: (withVideo?: boolean) => Promise<void>;
   endCall: () => void;
@@ -57,6 +58,9 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
   const [fileChannel, setFileChannel] = useState<RTCDataChannel | null>(null);
   const remoteStreamRef = useRef<MediaStream>(new MediaStream());
   const [remoteStream, setRemoteStream] = useState<MediaStream>(remoteStreamRef.current);
+  const remoteScreenStreamRef = useRef<MediaStream>(new MediaStream());
+  const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
+  const screenTrackIdRef = useRef<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
@@ -95,7 +99,9 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     screenStreamRef.current = null;
     screenAudioSenderRef.current = null;
     screenVideoSenderRef.current = null;
+    cameraVideoSenderRef.current = null;
     sharingInProgressRef.current = false;
+    screenTrackIdRef.current = null;
     // Clear track event handlers to prevent leaks
     const pc = pcRef.current;
     if (pc) {
@@ -133,6 +139,8 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     setScreenStream(null);
     remoteStreamRef.current = new MediaStream();
     setRemoteStream(remoteStreamRef.current);
+    remoteScreenStreamRef.current = new MediaStream();
+    setRemoteScreenStream(null);
     setCallError(null);
     setHmacKey(null);
     hmacDerivedRef.current = false;
@@ -194,22 +202,32 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
       }
     };
 
-    // Remote media tracks — reuse stable stream ref, only create new MediaStream
-    // on actual track add/remove (not mute/unmute which is track-level state)
-    const remote = remoteStreamRef.current;
+    // Remote media tracks — route screen share tracks to a separate stream
+    // based on track ID sent via signaling (contentHint doesn't propagate over WebRTC).
     pc.ontrack = (e) => {
-      if (!remote.getTracks().includes(e.track)) {
-        remote.addTrack(e.track);
-        setRemoteStream(new MediaStream(remote.getTracks()));
+      const isScreen = e.track.kind === "video" && e.track.id === screenTrackIdRef.current;
+      const targetRef = isScreen ? remoteScreenStreamRef : remoteStreamRef;
+      const target = targetRef.current;
+      const setter = isScreen ? setRemoteScreenStream : setRemoteStream;
+
+      if (!target.getTracks().includes(e.track)) {
+        target.addTrack(e.track);
+        setter(new MediaStream(target.getTracks()));
       }
 
       e.track.onended = () => {
-        if (remote.getTracks().includes(e.track)) {
-          remote.removeTrack(e.track);
-          setRemoteStream(new MediaStream(remote.getTracks()));
+        // Check both streams and remove from whichever contains the track
+        for (const [ref, set] of [
+          [remoteStreamRef, setRemoteStream],
+          [remoteScreenStreamRef, setRemoteScreenStream],
+        ] as const) {
+          const s = ref.current;
+          if (s.getTracks().includes(e.track)) {
+            s.removeTrack(e.track);
+            set(new MediaStream(s.getTracks()));
+          }
         }
       };
-      // mute/unmute are track-level state changes — no need to recreate the stream
     };
 
     if (host) {
@@ -367,6 +385,13 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
           } else {
             log("RTC joiner waiting for offer");
           }
+        } else if (msg.type === "screen-sharing") {
+          // Peer is sharing/stopping screen — store track ID for ontrack routing
+          if (msg.active && msg.trackId) {
+            screenTrackIdRef.current = msg.trackId;
+          } else {
+            screenTrackIdRef.current = null;
+          }
         } else if (msg.type === "peer-disconnected") {
           peerPresent = false;
           cleanup();
@@ -438,6 +463,10 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
       try { pc.removeTrack(screenAudioSenderRef.current); } catch { /* already removed */ }
       screenAudioSenderRef.current = null;
     }
+    if (cameraVideoSenderRef.current) {
+      try { pc.removeTrack(cameraVideoSenderRef.current); } catch { /* already removed */ }
+      cameraVideoSenderRef.current = null;
+    }
     sharingInProgressRef.current = false;
     // Stop all remaining media senders (mic, camera)
     pc.getSenders().forEach((s) => {
@@ -454,6 +483,7 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
   const screenAudioSenderRef = useRef<RTCRtpSender | null>(null);
   const sharingInProgressRef = useRef(false);
   const screenVideoSenderRef = useRef<RTCRtpSender | null>(null);
+  const cameraVideoSenderRef = useRef<RTCRtpSender | null>(null);
 
    
   const stopScreenShare = useCallback(async () => {
@@ -475,22 +505,14 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
       screenAudioSenderRef.current = null;
     }
 
-    // Swap back to camera track only if it's still alive
-    const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-    const videoSender = pc.getSenders().find((s) => s.track?.kind === "video")
-      || screenVideoSenderRef.current;
-
-    if (videoSender && cameraTrack?.readyState === "live") {
-      try { await videoSender.replaceTrack(cameraTrack); } catch (err) {
-        console.error("stopScreenShare: replaceTrack failed:", err);
-      }
+    // Remove the screen video sender — camera sender is untouched (dual stream model)
+    if (screenVideoSenderRef.current) {
+      try { pc.removeTrack(screenVideoSenderRef.current); } catch { /* already removed */ }
       screenVideoSenderRef.current = null;
-    } else if (videoSender) {
-      try { await videoSender.replaceTrack(null); } catch (err) {
-        console.error("stopScreenShare: replaceTrack(null) failed:", err);
-      }
-      // Keep screenVideoSenderRef — shareScreen will reuse this sender
     }
+
+    // Notify receiver that screen sharing stopped
+    signalingRef.current.send({ type: "screen-sharing", active: false });
   }, []);
 
   const shareScreen = useCallback(async () => {
@@ -512,29 +534,20 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
 
       screenStreamRef.current = stream;
 
-      // Replace the camera video track with the screen track (no extra tracks)
+      // Add screen track as a SEPARATE sender (dual stream — camera stays untouched)
       const screenTrack = stream.getVideoTracks()[0];
 
-      // 1. Find sender with active video track (e.g., camera)
-      let videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
-
-      // 2. Reuse saved sender from previous screen share (has null track)
-      // Verify sender still belongs to this PC instance (C3)
-      if (!videoSender && screenVideoSenderRef.current) {
-        if (pc.getSenders().includes(screenVideoSenderRef.current)) {
-          videoSender = screenVideoSenderRef.current;
-        } else {
-          screenVideoSenderRef.current = null;
-        }
+      // Clean up any stale screen video sender from a previous share session
+      if (screenVideoSenderRef.current) {
+        try { pc.removeTrack(screenVideoSenderRef.current); } catch { /* already removed */ }
+        screenVideoSenderRef.current = null;
       }
 
-      // 3. Replace track or add new sender as last resort
-      if (videoSender) {
-        await videoSender.replaceTrack(screenTrack);
-        screenVideoSenderRef.current = videoSender;
-      } else {
-        screenVideoSenderRef.current = pc.addTrack(screenTrack, stream);
-      }
+      // Add screen as a new video sender — triggers onnegotiationneeded
+      screenVideoSenderRef.current = pc.addTrack(screenTrack, stream);
+
+      // Notify receiver of the screen track ID (contentHint doesn't propagate over WebRTC)
+      signalingRef.current.send({ type: "screen-sharing", active: true, trackId: screenTrack.id });
 
       // Hint encoder to prioritize pixel-perfect sharpness for text/code
       // Set AFTER replaceTrack/addTrack so the transceiver is active
@@ -604,16 +617,15 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     const stream = localStreamRef.current;
     if (!pc || !stream) return;
 
-    // Block all camera toggling during screen share to prevent state confusion (B5)
-    if (screenStreamRef.current) {
-      setCallError("Stop screen sharing before changing the camera.");
-      return;
-    }
+    // Camera and screen share are independent (dual stream model) — no blocking needed
 
     const existingTrack = stream.getVideoTracks()[0];
     if (existingTrack) {
-      // Turn camera off — capture sender BEFORE stopping track (B2)
-      const sender = pc.getSenders().find((s) => s.track === existingTrack);
+      // Turn camera off — use cameraVideoSenderRef for reliable lookup (B2)
+      const sender = cameraVideoSenderRef.current
+        && pc.getSenders().includes(cameraVideoSenderRef.current)
+        ? cameraVideoSenderRef.current
+        : pc.getSenders().find((s) => s.track === existingTrack);
       existingTrack.stop();
       stream.removeTrack(existingTrack);
       if (sender) {
@@ -628,18 +640,15 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
         if (cleaningUpRef.current) { videoStream.getTracks().forEach((t) => t.stop()); return; }
         const newTrack = videoStream.getVideoTracks()[0];
         stream.addTrack(newTrack);
-        // Reuse the known video sender from a previous screen share, then fall back
-        // to any active video sender. Avoids picking a null-track AUDIO sender (B1).
-        const existingSender = (
-          screenVideoSenderRef.current
-          && pc.getSenders().includes(screenVideoSenderRef.current)
-        )
-          ? screenVideoSenderRef.current
-          : pc.getSenders().find((s) => s.track?.kind === "video");
+        // Use dedicated camera sender ref — never fall back to screenVideoSenderRef
+        const existingSender = cameraVideoSenderRef.current
+          && pc.getSenders().includes(cameraVideoSenderRef.current)
+          ? cameraVideoSenderRef.current
+          : null;
         if (existingSender) {
           await existingSender.replaceTrack(newTrack);
         } else {
-          pc.addTrack(newTrack, stream);
+          cameraVideoSenderRef.current = pc.addTrack(newTrack, stream);
         }
         // Set video codec preferences after adding video transceiver
         preferVideoCodecs(pc);
@@ -824,6 +833,7 @@ export default function useWebRTC(signaling: SignalingHook, isHost: boolean): We
     chatChannel,
     fileChannel,
     remoteStream,
+    remoteScreenStream,
     localStream,
     startCall,
     endCall,
