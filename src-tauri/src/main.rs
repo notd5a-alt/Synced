@@ -282,15 +282,14 @@ fn main() {
 
     // WebView2 GPU workaround — Surface Laptop Studio (and other hybrid-GPU Windows
     // machines) can show a black screen when WebView2 uses hardware-accelerated compositing.
-    // Disabling the GPU compositor forces software rendering for the compositor layer while
-    // still allowing WebGL/canvas GPU acceleration. Users can opt out by setting
-    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS themselves.
+    // Fully disable GPU rendering in WebView2 to force software rendering.
+    // Users can override by setting WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS themselves.
     #[cfg(windows)]
     {
         if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
             std::env::set_var(
                 "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                "--disable-gpu-compositing",
+                "--disable-gpu --disable-gpu-compositing --disable-gpu-rasterization --disable-gpu-sandbox",
             );
         }
     }
@@ -410,19 +409,33 @@ fn main() {
                 // Navigate to the backend
                 if is_production() {
                     if let Some(window) = app_handle.get_webview_window("main") {
+                        eprintln!("[tauri] backend ready — navigating to http://localhost:{}", port);
                         let url: tauri::Url = format!("http://localhost:{}", port).parse().unwrap();
                         let _ = window.navigate(url);
 
-                        // Health check: after 8 seconds, verify React mounted.
-                        // If <div id="root"> is still empty, the app failed to render —
-                        // show a diagnostic page so the user isn't stuck on a black screen.
+                        // Health check: after 5 seconds, verify the page loaded and React mounted.
+                        // Collects diagnostic info to help debug black-screen issues.
                         let health_window = window.clone();
-                        tokio::time::sleep(Duration::from_secs(8)).await;
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                         let _ = health_window.eval(r#"
                             (function() {
                                 var root = document.getElementById('root');
-                                if (root && root.children.length === 0) {
-                                    document.documentElement.innerHTML = '<head><style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0a;color:#ff8800;font-family:monospace;flex-direction:column;gap:12px;padding:24px;text-align:center}code{background:#1a1a1a;padding:2px 8px;border-radius:4px}a{color:#00ff00}</style></head><body><h2>Synced failed to start</h2><p>The backend is running but the UI did not load.</p><p>This can happen on machines with hybrid GPUs (e.g. Surface Laptop Studio).</p><p>Try restarting the app. If the issue persists, please report it.</p><button onclick="location.reload()" style="margin-top:8px;padding:8px 24px;border:1px solid #ff8800;background:transparent;color:#ff8800;cursor:pointer;font-family:monospace;text-transform:uppercase">[ RELOAD ]</button></body>';
+                                var rootChildren = root ? root.children.length : -1;
+                                var bodyText = document.body ? document.body.innerText.substring(0, 200) : '(no body)';
+                                var title = document.title || '(no title)';
+                                var url = location.href;
+                                var errors = [];
+
+                                // Collect any JS errors that occurred
+                                window.__syncedDiagErrors = window.__syncedDiagErrors || [];
+                                errors = window.__syncedDiagErrors;
+
+                                var diag = 'URL: ' + url + '\nTitle: ' + title + '\nRoot children: ' + rootChildren + '\nBody: ' + bodyText;
+                                if (errors.length > 0) diag += '\nErrors: ' + errors.join('; ');
+
+                                // If root is empty or missing, the app failed to render
+                                if (rootChildren <= 0) {
+                                    document.documentElement.innerHTML = '<head><style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0a;color:#ff8800;font-family:monospace;flex-direction:column;gap:12px;padding:24px;text-align:center}pre{background:#1a1a1a;padding:12px;border-radius:4px;text-align:left;font-size:11px;max-width:90vw;overflow:auto;color:#aaa;white-space:pre-wrap}</style></head><body><h2>Synced failed to start</h2><p>The backend is running but the UI did not load.</p><pre>' + diag.replace(/</g,'&lt;') + '</pre><button onclick="location.reload()" style="margin-top:8px;padding:8px 24px;border:1px solid #ff8800;background:transparent;color:#ff8800;cursor:pointer;font-family:monospace;text-transform:uppercase">[ RELOAD ]</button></body>';
                                 }
                             })();
                         "#);

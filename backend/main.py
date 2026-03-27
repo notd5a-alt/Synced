@@ -42,17 +42,21 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'wasm-unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-            "font-src 'self' https://fonts.gstatic.com; "
-            "connect-src 'self' ws: wss:; "
-            "media-src 'self' blob:; "
-            "img-src 'self' data: blob:; "
-            "object-src 'none'; "
-            "base-uri 'self'"
-        )
+        # Skip CSP for localhost (Tauri webview) — WebView2 on some machines
+        # blocks module scripts or WASM under strict CSP even for same-origin.
+        host = request.headers.get("host", "")
+        if not host.startswith("localhost") and not host.startswith("127.0.0.1"):
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'wasm-unsafe-eval'; "
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src 'self' https://fonts.gstatic.com; "
+                "connect-src 'self' ws: wss:; "
+                "media-src 'self' blob:; "
+                "img-src 'self' data: blob:; "
+                "object-src 'none'; "
+                "base-uri 'self'"
+            )
         return response
 
 

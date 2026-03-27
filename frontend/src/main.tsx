@@ -2,10 +2,16 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import ErrorBoundary from './components/ErrorBoundary'
 
+// Diagnostic error collection — read by Tauri's health check to display on black-screen failures
+declare global {
+  interface Window { __syncedDiagErrors?: string[] }
+}
+window.__syncedDiagErrors = [];
+
 // Global error handler — catches errors that happen before or outside React
 // (e.g. WASM load failures, import errors, GPU-related crashes).
-// Without this, the user sees a blank/black screen with no indication of what went wrong.
 window.addEventListener('error', (e) => {
+  window.__syncedDiagErrors?.push(e.message || String(e));
   const root = document.getElementById('root');
   if (root && root.children.length === 0) {
     root.innerHTML = `
@@ -19,6 +25,8 @@ window.addEventListener('error', (e) => {
 });
 
 window.addEventListener('unhandledrejection', (e) => {
+  const msg = e.reason?.message || String(e.reason);
+  window.__syncedDiagErrors?.push('Promise: ' + msg);
   console.error('Unhandled promise rejection:', e.reason);
 });
 
