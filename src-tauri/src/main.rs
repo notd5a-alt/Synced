@@ -280,6 +280,21 @@ fn main() {
     let port = parse_port();
     let central = is_central_mode();
 
+    // WebView2 GPU workaround — Surface Laptop Studio (and other hybrid-GPU Windows
+    // machines) can show a black screen when WebView2 uses hardware-accelerated compositing.
+    // Disabling the GPU compositor forces software rendering for the compositor layer while
+    // still allowing WebGL/canvas GPU acceleration. Users can opt out by setting
+    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS themselves.
+    #[cfg(windows)]
+    {
+        if std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_err() {
+            std::env::set_var(
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                "--disable-gpu-compositing",
+            );
+        }
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
@@ -397,6 +412,20 @@ fn main() {
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let url: tauri::Url = format!("http://localhost:{}", port).parse().unwrap();
                         let _ = window.navigate(url);
+
+                        // Health check: after 8 seconds, verify React mounted.
+                        // If <div id="root"> is still empty, the app failed to render —
+                        // show a diagnostic page so the user isn't stuck on a black screen.
+                        let health_window = window.clone();
+                        tokio::time::sleep(Duration::from_secs(8)).await;
+                        let _ = health_window.eval(r#"
+                            (function() {
+                                var root = document.getElementById('root');
+                                if (root && root.children.length === 0) {
+                                    document.documentElement.innerHTML = '<head><style>body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0a0a;color:#ff8800;font-family:monospace;flex-direction:column;gap:12px;padding:24px;text-align:center}code{background:#1a1a1a;padding:2px 8px;border-radius:4px}a{color:#00ff00}</style></head><body><h2>Synced failed to start</h2><p>The backend is running but the UI did not load.</p><p>This can happen on machines with hybrid GPUs (e.g. Surface Laptop Studio).</p><p>Try restarting the app. If the issue persists, please report it.</p><button onclick="location.reload()" style="margin-top:8px;padding:8px 24px;border:1px solid #ff8800;background:transparent;color:#ff8800;cursor:pointer;font-family:monospace;text-transform:uppercase">[ RELOAD ]</button></body>';
+                                }
+                            })();
+                        "#);
                     }
                 }
             });
